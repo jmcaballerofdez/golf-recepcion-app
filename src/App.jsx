@@ -1122,6 +1122,11 @@ function InformeFichajes({ equipo, fichajes }) {
   const [ancla, setAncla] = useState(hoyISO);
   const [desdeC, setDesdeC] = useState("");
   const [hastaC, setHastaC] = useState("");
+  const { datos: turnosTodos } = useColeccion("recep_turnos", "lunes", "desc");
+  const { datos: tareasTodas } = useColeccion("recep_tareas_asignadas", "creadoEn", "desc");
+  const { datos: ventasTodas } = useColeccion("recep_ventas_gf", "creadoEn", "desc");
+  const { datos: incidTodas } = useColeccion("recep_incidencias", "creadoEn", "desc");
+  const { datos: checkTodos } = useColeccion("recep_checklist_diario", "fecha", "desc");
   const r = rangoInforme(modo, ancla, desdeC, hastaC);
   const enRango = (f) => { const k = fechaISO(f.momento); return k >= r.desde && k <= r.hasta; };
   const todos = empleado === "__todos";
@@ -1151,6 +1156,28 @@ function InformeFichajes({ equipo, fichajes }) {
     const filas = [["Fecha", "Hora", "Empleado", "Tipo", "Punto", "Origen", "Distancia al punto (m)", "Precision GPS (m)", "Latitud", "Longitud"]];
     sel.forEach((f) => filas.push([fechaLegible(fechaISO(f.momento)), horaCorta(f.momento), f.empleado || "", f.tipo || "", f.puntoNombre || "", f.origen || "", f.distanciaM ?? "", f.precisionM ?? "", f.lat ?? "", f.lng ?? ""]));
     bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_registro_completo_" + (todos ? "todos" : empleado.replace(/\s+/g, "_")) + ".csv");
+  }
+  // Todo lo que consta de un empleado: fichajes, turnos, tareas, ventas, incidencias y checklist
+  function descargarTodoEmpleado() {
+    const n = (empleado || "").trim().toLowerCase();
+    const es = (v) => String(v || "").trim().toLowerCase() === n;
+    const filas = [];
+    const sec = (titulo, cab, datos) => { filas.push([titulo]); filas.push(cab); datos.forEach((x) => filas.push(x)); filas.push([]); };
+    const fich = fichajes.filter((f) => es(f.empleado)).sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
+    sec("FICHAJES (" + fich.length + ")", ["Fecha", "Hora", "Tipo", "Punto", "Origen", "Distancia al punto (m)", "Precision GPS (m)"],
+      fich.map((f) => [fechaLegible(fechaISO(f.momento)), horaCorta(f.momento), f.tipo || "", f.puntoNombre || "", f.origen || "", f.distanciaM ?? "", f.precisionM ?? ""]));
+    const tur = turnosTodos.filter((t) => es(t.empleado)).sort((a, b) => String(a.lunes).localeCompare(String(b.lunes)));
+    sec("TURNOS (" + tur.length + " semanas)", ["Semana del lunes", ...DIAS_SEMANA],
+      tur.map((t) => [fechaLegible(t.lunes), ...DIAS_SEMANA.map((_, i) => (t.turnos || [])[i] ?? "")]));
+    const tar = tareasTodas.filter((t) => es(t.empleado));
+    sec("TAREAS ASIGNADAS (" + tar.length + ")", ["Fecha", "Tarea", "Asignada por"], tar.map((t) => [fechaLegible(t.fecha), t.tarea || "", t.asignadoPor || ""]));
+    const ven = ventasTodas.filter((v) => es(v.registradoPor));
+    sec("VENTAS REGISTRADAS (" + ven.length + ")", ["Fecha", "Tipo", "Jugadores", "Importe"], ven.map((v) => [fechaLegible(v.fecha), v.tipo || "", v.jugadores ?? "", v.importe ?? ""]));
+    const inc = incidTodas.filter((i) => es(i.reportadoPor));
+    sec("INCIDENCIAS REPORTADAS (" + inc.length + ")", ["Fecha", "Titulo", "Gravedad", "Estado"], inc.map((i) => [fechaCorta(i.creadoEn), i.titulo || "", i.gravedad || "", i.estado || ""]));
+    const chk = checkTodos.filter((c) => es(c.actualizadoPor));
+    sec("CHECKLIST ACTUALIZADO (" + chk.length + " dias)", ["Fecha", "Tareas hechas"], chk.map((c) => [fechaLegible(c.fecha), (c.hechas || []).length]));
+    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "registros_completos_" + empleado.replace(/\s+/g, "_") + ".csv");
   }
   function descargar() {
     const filas = [];
@@ -1200,6 +1227,7 @@ function InformeFichajes({ equipo, fichajes }) {
           <div className="flex gap-2">
             <BotonSecundario onClick={descargar}>Descargar Excel (CSV)</BotonSecundario>
             <BotonSecundario onClick={descargarBruto}>Registro completo (todas las fechas)</BotonSecundario>
+            {!todos && <BotonSecundario onClick={descargarTodoEmpleado}>Todo lo de {empleado.split(" ")[0]} (fichajes, turnos, ventas...)</BotonSecundario>}
             <BotonSecundario onClick={() => window.print()}>Imprimir</BotonSecundario>
           </div>
         </div>

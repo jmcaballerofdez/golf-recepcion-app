@@ -894,38 +894,83 @@ function VentasDia({ usuario, nombreOperario, soloHoy }) {
   );
 }
 
+const DIAS_SEM = [["L", 1], ["M", 2], ["X", 3], ["J", 4], ["V", 5], ["S", 6], ["D", 0]];
+const TAREAS_EXCEL = {
+  diaria: ["Barrer zona taquillas/carros", "Limpiar buggys", "Mantener recepción limpia", "Mirar papeleras de recepción", "Recoger cestas", "Recoger fichas"],
+  semanal: ["Limpiar cristales", "Limpiar canchas", "Limpiar zona de carros, taquillas", "Revisión y limpieza de baños", "Limpiar recepción", "Limpieza dirección (José)", "Papeleras", "Comprobación y recogida de bolas", "Riego de plantas casa club y alrededores", "Limpiar pasillo abajo", "Control de facturas y archivar", "Organizar y recoger cancha de prácticas", "Revisión de correos y reservas correctas", "Mantener buggys limpios", "Revisar depósito de agua y espuma"],
+};
+
 function useCategoriasChecklist() {
-  const [tareas, setTareas] = useState(null);
+  const [cfg, setCfg] = useState(null);
   useEffect(() => {
     const unsub = onSnapshot(docClub("recep_config", "tareasChecklist"), (snap) => {
-      setTareas(snap.exists() ? (snap.data().lista || []) : []);
-    }, () => setTareas([]));
+      setCfg(snap.exists() ? snap.data() : {});
+    }, () => setCfg({}));
     return () => unsub();
   }, []);
   async function guardar(nuevaLista) {
-    await setDoc(docClub("recep_config", "tareasChecklist"), { lista: nuevaLista });
+    await setDoc(docClub("recep_config", "tareasChecklist"), { lista: nuevaLista }, { merge: true });
   }
-  return { tareas: tareas || [], guardar };
+  async function guardarExtra(obj) {
+    await setDoc(docClub("recep_config", "tareasChecklist"), obj, { merge: true });
+  }
+  const c = cfg || {};
+  return { tareas: c.lista || [], grupos: c.grupos || {}, dias: c.dias || {}, guardar, guardarExtra };
 }
 
 function TiposTareaChecklist() {
-  const { tareas, guardar } = useCategoriasChecklist();
+  const { tareas, grupos, dias, guardar, guardarExtra } = useCategoriasChecklist();
   const [nueva, setNueva] = useState("");
+  const grupoDe = (t) => grupos[t] || "semanal";
+  const diasDe = (t) => dias[t] || [0, 1, 2, 3, 4, 5, 6];
+
+  function cargarExcel() {
+    const lista = [...tareas]; const g = { ...grupos };
+    Object.entries(TAREAS_EXCEL).forEach(([grupo, nombres]) => nombres.forEach((n) => {
+      if (!lista.includes(n)) { lista.push(n); g[n] = grupo; }
+    }));
+    guardarExtra({ lista, grupos: g });
+  }
+  function alternarDia(t, d) {
+    const act = diasDe(t);
+    const nuevo = act.includes(d) ? act.filter((x) => x !== d) : [...act, d];
+    guardarExtra({ dias: { ...dias, [t]: nuevo } });
+  }
+  function quitar(t) {
+    if (!confirm("Quitar la tarea '" + t + "' del checklist? (Lo ya registrado en dias pasados se conserva)")) return;
+    const g = { ...grupos }; delete g[t]; const d = { ...dias }; delete d[t];
+    guardarExtra({ lista: tareas.filter((x) => x !== t), grupos: g, dias: d });
+  }
 
   return (
     <div>
-      <Cabecera titulo="Tareas del checklist" subtitulo="Catalogo de tareas que apareceran cada dia en el checklist de recepcion." />
-      <Tarjeta className="p-6 max-w-xl">
-        <div className="flex flex-wrap gap-2 mb-4">
-          {tareas.map((t) => (
-            <span key={t} className="inline-flex items-center gap-1.5 text-xs rounded-full pl-3 pr-1.5 py-1" style={{ background: VINO_SUAVE, color: TINTA }}>
-              {t}
-              <button onClick={() => guardar(tareas.filter((x) => x !== t))} className="hover:opacity-70"><X size={12} /></button>
-            </span>
-          ))}
-          {tareas.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Sin tareas configuradas todavia.</p>}
-        </div>
-        <div className="flex gap-2">
+      <Cabecera titulo="Tareas del checklist" subtitulo="Tareas que apareceran en el checklist de recepcion, con los dias en que toca cada una." />
+      <div className="max-w-2xl space-y-3">
+        {tareas.length === 0 && (
+          <Tarjeta className="p-5">
+            <p className="text-sm mb-3" style={{ color: TINTA_SUAVE }}>Aun no hay tareas. Puedes cargar las de tu Excel (6 diarias y 15 semanales) y luego ajustarlas.</p>
+            <BotonSecundario onClick={cargarExcel} icon={Plus}>Cargar tareas del Excel</BotonSecundario>
+          </Tarjeta>
+        )}
+        {tareas.map((t) => (
+          <Tarjeta key={t} className="p-4">
+            <div className="flex items-start justify-between gap-2 mb-2">
+              <p className="text-sm font-medium" style={{ color: TINTA }}>{t}</p>
+              <button onClick={() => quitar(t)} className="p-1" style={{ color: TINTA_TENUE }}><Trash2 size={15} /></button>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <select className="border rounded-lg px-2 py-1 text-xs" style={inputStyle} value={grupoDe(t)} onChange={(e) => guardarExtra({ grupos: { ...grupos, [t]: e.target.value } })}>
+                <option value="diaria">Diaria</option>
+                <option value="semanal">Semanal</option>
+              </select>
+              {DIAS_SEM.map(([l, d]) => {
+                const on = diasDe(t).includes(d);
+                return <button key={d} onClick={() => alternarDia(t, d)} className="w-7 h-7 rounded-full text-xs border" style={{ background: on ? VINO : "transparent", color: on ? "#FFF" : TINTA_SUAVE, borderColor: on ? VINO : PAPEL_LINEA }}>{l}</button>;
+              })}
+            </div>
+          </Tarjeta>
+        ))}
+        <div className="flex gap-2 pt-2">
           <input className={inputCls} style={inputStyle} placeholder="Nueva tarea..." value={nueva} onChange={(e) => setNueva(e.target.value)} />
           <BotonSecundario
             onClick={() => {
@@ -936,50 +981,82 @@ function TiposTareaChecklist() {
             icon={Plus}
           >Anadir</BotonSecundario>
         </div>
-      </Tarjeta>
+        {tareas.length > 0 && <button onClick={cargarExcel} className="text-xs underline" style={{ color: VINO }}>Anadir las tareas del Excel que falten</button>}
+      </div>
     </div>
   );
 }
 
+function horaAhora() { const d = new Date(); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+
 function Checklist({ usuario, nombreOperario }) {
   const hoy = fechaISO(new Date());
-  const { tareas } = useCategoriasChecklist();
+  const diaSem = new Date().getDay();
+  const { tareas, grupos, dias: diasCfg } = useCategoriasChecklist();
   const { datos: dias } = useColeccion("recep_checklist_diario", "fecha", "desc");
   const diaDoc = dias.find((d) => d.fecha === hoy);
   const hechas = diaDoc?.hechas || {};
+  const detalle = diaDoc?.detalle || {};
+  const [abiertas, setAbiertas] = useState({});
 
-  async function marcar(tarea, valor) {
-    const nuevasHechas = { ...hechas, [tarea]: valor };
-    if (diaDoc) {
-      await actualizarDoc("recep_checklist_diario", diaDoc.id, { hechas: nuevasHechas });
-    } else {
-      await crearDoc("recep_checklist_diario", { fecha: hoy, hechas: nuevasHechas, actualizadoPor: nombreOperario || usuario?.email || "" });
-    }
+  async function guardarTarea(tarea, patch) {
+    const nuevoDet = { ...detalle, [tarea]: { ...(detalle[tarea] || {}), ...patch, por: nombreOperario || usuario?.email || "" } };
+    const nuevasHechas = { ...hechas, [tarea]: !!nuevoDet[tarea].fin };
+    if (diaDoc) await actualizarDoc("recep_checklist_diario", diaDoc.id, { hechas: nuevasHechas, detalle: nuevoDet });
+    else await crearDoc("recep_checklist_diario", { fecha: hoy, hechas: nuevasHechas, detalle: nuevoDet, actualizadoPor: nombreOperario || usuario?.email || "" });
   }
 
-  const total = tareas.length;
-  const completadas = tareas.filter((t) => hechas[t]).length;
+  const deHoy = tareas.filter((t) => (diasCfg[t] || [0, 1, 2, 3, 4, 5, 6]).includes(diaSem));
+  const diarias = deHoy.filter((t) => (grupos[t] || "semanal") === "diaria");
+  const semanales = deHoy.filter((t) => (grupos[t] || "semanal") !== "diaria");
+  const completadas = deHoy.filter((t) => detalle[t]?.fin).length;
+
+  function Fila({ t }) {
+    const d = detalle[t] || {};
+    const hecha = !!d.fin;
+    const enCurso = !!d.inicio && !d.fin;
+    const abierta = abiertas[t] || !!d.obs;
+    return (
+      <Tarjeta className="p-4">
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-sm font-medium" style={{ color: hecha ? TINTA_SUAVE : TINTA, textDecoration: hecha ? "line-through" : "none" }}>{t}</p>
+          <span className="w-6 h-6 rounded-md flex items-center justify-center border flex-shrink-0" style={{ borderColor: hecha ? SALVIA : PAPEL_LINEA, background: hecha ? SALVIA : "transparent" }}>
+            {hecha && <Check size={14} color="#FFF" />}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <div>
+            <p className="text-xs mb-1" style={{ color: TINTA_TENUE }}>Inicio</p>
+            {d.inicio ? <input type="time" className={inputCls} style={inputStyle} value={d.inicio} onChange={(e) => guardarTarea(t, { inicio: e.target.value })} />
+              : <button onClick={() => guardarTarea(t, { inicio: horaAhora() })} className="w-full rounded-lg px-3 py-2 text-sm font-medium border" style={{ borderColor: VINO, color: VINO }}>Empezar</button>}
+          </div>
+          <div>
+            <p className="text-xs mb-1" style={{ color: TINTA_TENUE }}>Final</p>
+            {d.fin ? <input type="time" className={inputCls} style={inputStyle} value={d.fin} onChange={(e) => guardarTarea(t, { fin: e.target.value })} />
+              : <button onClick={() => guardarTarea(t, { fin: horaAhora() })} className="w-full rounded-lg px-3 py-2 text-sm font-medium" style={{ background: enCurso ? VINO : PAPEL_LINEA, color: enCurso ? "#FFF" : TINTA_SUAVE }}>Terminar</button>}
+          </div>
+        </div>
+        {abierta ? (
+          <textarea className={inputCls + " mt-3"} style={inputStyle} rows={2} placeholder="Observaciones..." defaultValue={d.obs || ""} onBlur={(e) => { if ((e.target.value || "") !== (d.obs || "")) guardarTarea(t, { obs: e.target.value }); }} />
+        ) : (
+          <button onClick={() => setAbiertas({ ...abiertas, [t]: true })} className="text-xs underline mt-3" style={{ color: VINO }}>+ Observaciones</button>
+        )}
+        {(d.inicio || d.fin) && (
+          <button onClick={() => { if (confirm("Reiniciar esta tarea?")) guardarTarea(t, { inicio: "", fin: "" }); }} className="block text-xs mt-2" style={{ color: TINTA_TENUE }}>Reiniciar tarea</button>
+        )}
+      </Tarjeta>
+    );
+  }
 
   return (
     <div>
-      <Cabecera titulo="Checklist de tareas" subtitulo={`Tareas de hoy (${fechaLegible(hoy)}). ${completadas}/${total} completadas.`} />
-      {tareas.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>No hay tareas configuradas. Anadelas en "Tareas del checklist".</p>}
-      <div className="space-y-2 max-w-xl">
-        {tareas.map((t) => {
-          const hecha = !!hechas[t];
-          return (
-            <Tarjeta key={t} className="p-4 flex items-center justify-between" onClick={() => marcar(t, !hecha)}>
-              <span className="text-sm" style={{ color: hecha ? TINTA_SUAVE : TINTA, textDecoration: hecha ? "line-through" : "none" }}>{t}</span>
-              <span
-                className="w-6 h-6 rounded-md flex items-center justify-center border"
-                style={{ borderColor: hecha ? SALVIA : PAPEL_LINEA, background: hecha ? SALVIA : "transparent" }}
-              >
-                {hecha && <Check size={14} color="#FFF" />}
-              </span>
-            </Tarjeta>
-          );
-        })}
-      </div>
+      <Cabecera titulo="Checklist de tareas" subtitulo={`Hoy, ${fechaLegible(hoy)}. ${completadas}/${deHoy.length} completadas.`} />
+      {tareas.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>No hay tareas configuradas. El responsable las anade en "Tareas del checklist".</p>}
+      {tareas.length > 0 && deHoy.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Hoy no hay tareas programadas.</p>}
+      {diarias.length > 0 && <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Tareas diarias</p>}
+      <div className="space-y-3 max-w-xl mb-6">{diarias.map((t) => <div key={t}>{Fila({ t })}</div>)}</div>
+      {semanales.length > 0 && <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Tareas de la semana</p>}
+      <div className="space-y-3 max-w-xl">{semanales.map((t) => <div key={t}>{Fila({ t })}</div>)}</div>
     </div>
   );
 }

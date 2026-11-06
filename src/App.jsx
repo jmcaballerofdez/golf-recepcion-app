@@ -486,6 +486,7 @@ export default function App() {
       { id: "necesidades", label: "Necesidades", Icon: ShoppingCart },
       { id: "incidencias", label: "Incidencias", Icon: AlertTriangle },
       { id: "fichajes", label: "Fichajes", Icon: Clock },
+      { id: "ausencias", label: "Ausencias", Icon: Home },
     ]},
     ...(puedeGestionEquipo ? [{ label: "Equipo", items: [
       { id: "equipo", label: "Equipo", Icon: Users },
@@ -498,7 +499,7 @@ export default function App() {
 
   const TITULOS = {
     dashboard: "Panel", ventas: "Ventas del dia", checklist: "Checklist de tareas", turnos: "Turnos", necesidades: "Necesidades",
-    incidencias: "Incidencias", equipo: "Equipo", tipos_tarea: "Tareas del checklist", fichajes: "Fichajes", puntos_qr: "Puntos QR",
+    incidencias: "Incidencias", ausencias: "Ausencias", equipo: "Equipo", tipos_tarea: "Tareas del checklist", fichajes: "Fichajes", puntos_qr: "Puntos QR",
   };
 
   if (cargandoAuth) {
@@ -608,6 +609,7 @@ export default function App() {
           {vista === "incidencias" && <Incidencias />}
           {vista === "equipo" && puedeGestionEquipo && <Equipo />}
           {vista === "tipos_tarea" && esSuperadmin && <TiposTareaChecklist />}
+          {vista === "ausencias" && <Ausencias nombreOperario={nombreOperario} gestor={puedeGestionEquipo} />}
           {vista === "fichajes" && <Fichajes puedeInforme={puedeGestionEquipo} />}
           {vista === "puntos_qr" && esSuperadmin && <PuntosQR />}
         </div>
@@ -1136,6 +1138,225 @@ function Incidencias() {
           ) : <span />}
           <BotonPrimario onClick={guardar} icon={null}>Guardar</BotonPrimario>
         </div>
+      </Modal>
+    </div>
+  );
+}
+
+// ---------- AUSENCIAS (vacaciones, asuntos propios, asistencia medica, permisos) ----------
+const TIPOS_AUS = { vacaciones: "Vacaciones", asuntos: "Asuntos propios", medica: "Asistencia médica", permiso: "Permiso retribuido (otro)", otros: "Otros" };
+const AUS_DEF = { vacDias: 23, asuntosDias: 3, medicaHoras: 16, horasDia: 8, jornadaAnual: 1752 };
+
+function tokensNombre(n) { return String(n || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\(.*?\)/g, " ").split(/\s+/).filter(Boolean); }
+function mismaPersona(a, b) {
+  const ta = tokensNombre(a), tb = tokensNombre(b);
+  if (!ta.length || !tb.length) return false;
+  const [c, l] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
+  return c.every((t) => l.includes(t));
+}
+function diasLaborablesEntre(desde, hasta) {
+  if (!desde || !hasta || hasta < desde) return 0;
+  let n = 0, f = desde;
+  for (let i = 0; i < 400 && f <= hasta; i++) {
+    const [y, m, d] = f.split("-").map(Number);
+    const w = new Date(y, m - 1, d).getDay();
+    if (w !== 0 && w !== 6) n++;
+    f = sumarDiasISO(f, 1);
+  }
+  return n;
+}
+function useConfigAusencias() {
+  const [cfg, setCfg] = useState(null);
+  useEffect(() => {
+    const unsub = onSnapshot(docClub("recep_config", "ausencias"), (s) => setCfg(s.exists() ? s.data() : {}), () => setCfg({}));
+    return () => unsub();
+  }, []);
+  return { cfg: { ...AUS_DEF, ...(cfg || {}) }, guardar: (obj) => setDoc(docClub("recep_config", "ausencias"), obj, { merge: true }) };
+}
+function horasDeAusencia(a, cfg) {
+  if (a.tipo === "medica") return Number(a.horas || 0);
+  return Number(a.dias || 0) * Number(cfg.horasDia);
+}
+function toneAus(e) { return e === "aprobada" ? "verde" : e === "denegada" ? "rojo" : "ambar"; }
+function textoAus(a) {
+  const rango = a.desde === a.hasta ? fechaLegible(a.desde) : fechaLegible(a.desde) + " → " + fechaLegible(a.hasta);
+  return rango + (a.tipo === "medica" ? " · " + a.horas + " h" : " · " + a.dias + " día" + (Number(a.dias) === 1 ? "" : "s"));
+}
+
+function Ausencias({ nombreOperario, gestor }) {
+  const { datos: todas } = useColeccion("recep_ausencias", "creadoEn", "desc");
+  const { datos: equipoTodos } = useColeccion("recep_equipo", "nombre", "asc");
+  const { datos: fichajes } = useColeccion("recep_fichajes", "momento", "desc");
+  const { cfg, guardar: guardarCfg } = useConfigAusencias();
+  const anioHoy = new Date().getFullYear();
+  const [anio, setAnio] = useState(anioHoy);
+  const [modal, setModal] = useState(false);
+  const [resolviendo, setResolviendo] = useState(null);
+  const [respuesta, setRespuesta] = useState("");
+  const [ajustes, setAjustes] = useState(false);
+  const hoy = fechaISO(new Date());
+  const vacio = { tipo: "vacaciones", desde: hoy, hasta: hoy, dias: "1", horas: "2", motivo: "" };
+  const [form, setForm] = useState(vacio);
+
+  const delAnio = todas.filter((a) => String(a.desde || "").startsWith(String(anio)));
+  const mias = delAnio.filter((a) => mismaPersona(a.empleado, nombreOperario));
+  const pendientes = todas.filter((a) => a.estado === "pendiente");
+
+  function cambiarFechas(patch) {
+    const f = { ...form, ...patch };
+    if (f.hasta < f.desde) f.hasta = f.desde;
+    f.dias = String(diasLaborablesEntre(f.desde, f.hasta));
+    setForm(f);
+  }
+  async function enviar() {
+    if (!nombreOperario) { alert("No se reconoce tu nombre de operario. Avisa al responsable."); return; }
+    if (form.tipo === "medica" ? !(Number(form.horas) > 0) : !(Number(form.dias) > 0)) { alert("Indica los dias u horas de la ausencia."); return; }
+    await crearDoc("recep_ausencias", {
+      empleado: nombreOperario, tipo: form.tipo, desde: form.desde, hasta: form.tipo === "medica" ? form.desde : form.hasta,
+      dias: form.tipo === "medica" ? 0 : Number(form.dias), horas: form.tipo === "medica" ? Number(form.horas) : 0,
+      motivo: form.motivo.trim(), estado: "pendiente",
+    });
+    setModal(false); setForm(vacio);
+  }
+  async function resolver(a, estado) {
+    await actualizarDoc("recep_ausencias", a.id, { estado, respuesta: respuesta.trim(), resueltaEn: fechaISO(new Date()) });
+    setResolviendo(null); setRespuesta("");
+  }
+
+  function saldo(persona) {
+    const ap = delAnio.filter((a) => a.estado === "aprobada" && mismaPersona(a.empleado, persona));
+    const suma = (t, campo) => ap.filter((a) => a.tipo === t).reduce((s, a) => s + Number(a[campo] || 0), 0);
+    const horasAus = ap.reduce((s, a) => s + horasDeAusencia(a, cfg), 0);
+    const horasFich = tramosDeFichajes(fichajes.filter((f) => mismaPersona(persona, f.empleado) && fechaISO(f.momento).startsWith(String(anio)))).reduce((s, d) => s + d.ms, 0) / 3600000;
+    return {
+      vac: suma("vacaciones", "dias"), asu: suma("asuntos", "dias"), med: suma("medica", "horas"), horasAus, horasFich,
+      total: horasFich + horasAus,
+    };
+  }
+  const personas = equipoTodos.filter((m) => !m.baja).map((m) => m.nombre);
+  const yo = saldo(nombreOperario);
+
+  function Resumen({ s, nombre }) {
+    return (
+      <Tarjeta className="p-4">
+        {nombre && <p className="font-medium mb-2" style={{ color: TINTA }}>{nombre}</p>}
+        <div className="grid grid-cols-3 gap-2 text-center">
+          {[["Vacaciones", s.vac, cfg.vacDias, "d"], ["Asuntos propios", s.asu, cfg.asuntosDias, "d"], ["Médico", s.med, cfg.medicaHoras, "h"]].map(([l, u, m, ud]) => (
+            <div key={l} className="rounded-lg py-2" style={{ background: VINO_SUAVE }}>
+              <p className="text-xs" style={{ color: TINTA_SUAVE }}>{l}</p>
+              <p className="text-sm font-medium num" style={{ color: u > m ? LADRILLO : TINTA }}>{u}/{m} {ud}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs mt-3" style={{ color: TINTA_SUAVE }}>
+          Horas del año: <b>{s.horasFich.toFixed(1)} h</b> fichadas + <b>{s.horasAus.toFixed(1)} h</b> de ausencias aprobadas = <b>{s.total.toFixed(1)} h</b> de {cfg.jornadaAnual} h
+          {" "}(faltan {Math.max(0, cfg.jornadaAnual - s.total).toFixed(1)} h)
+        </p>
+      </Tarjeta>
+    );
+  }
+  function Fila({ a, conAcciones }) {
+    return (
+      <Tarjeta className="p-4">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="font-medium text-sm" style={{ color: TINTA }}>{conAcciones ? a.empleado + " · " : ""}{TIPOS_AUS[a.tipo] || a.tipo}</p>
+            <p className="text-xs mt-0.5" style={{ color: TINTA_SUAVE }}>{textoAus(a)}</p>
+            {a.motivo && <p className="text-xs mt-1" style={{ color: TINTA_SUAVE }}>“{a.motivo}”</p>}
+            {a.respuesta && <p className="text-xs mt-1" style={{ color: TINTA_TENUE }}>Respuesta: {a.respuesta}</p>}
+          </div>
+          <Badge tone={toneAus(a.estado)}>{a.estado}</Badge>
+        </div>
+        {conAcciones && a.estado === "pendiente" && (resolviendo === a.id ? (
+          <div className="mt-3">
+            <input className={inputCls} style={inputStyle} placeholder="Comentario (opcional)" value={respuesta} onChange={(e) => setRespuesta(e.target.value)} />
+            <div className="flex gap-2 mt-2">
+              <button onClick={() => resolver(a, "aprobada")} className="flex-1 rounded-lg px-3 py-2 text-sm font-medium text-white" style={{ background: SALVIA }}>Aprobar</button>
+              <button onClick={() => resolver(a, "denegada")} className="flex-1 rounded-lg px-3 py-2 text-sm font-medium text-white" style={{ background: LADRILLO }}>Denegar</button>
+              <button onClick={() => { setResolviendo(null); setRespuesta(""); }} className="px-3 text-sm" style={{ color: TINTA_SUAVE }}>Cancelar</button>
+            </div>
+          </div>
+        ) : <button onClick={() => { setResolviendo(a.id); setRespuesta(""); }} className="mt-3 text-sm underline" style={{ color: VINO }}>Responder solicitud</button>)}
+        {a.estado === "pendiente" && !conAcciones && (
+          <button onClick={async () => { if (confirm("Cancelar esta solicitud?")) await borrarDoc("recep_ausencias", a.id); }} className="mt-2 text-xs" style={{ color: LADRILLO }}>Cancelar solicitud</button>
+        )}
+        {gestor && a.estado !== "pendiente" && conAcciones && (
+          <button onClick={() => actualizarDoc("recep_ausencias", a.id, { estado: "pendiente", respuesta: "" })} className="mt-2 text-xs" style={{ color: TINTA_TENUE }}>Volver a pendiente</button>
+        )}
+      </Tarjeta>
+    );
+  }
+
+  return (
+    <div>
+      <Cabecera titulo="Ausencias" subtitulo="Solicitud de vacaciones, asuntos propios, asistencia médica y otros permisos.">
+        <BotonPrimario onClick={() => { setForm(vacio); setModal(true); }}>Solicitar</BotonPrimario>
+      </Cabecera>
+      <div className="flex items-center gap-3 mb-5">
+        <button onClick={() => setAnio(anio - 1)} className="p-1" style={{ color: TINTA_SUAVE }}><ChevronLeft size={18} /></button>
+        <p className="font-medium num" style={{ color: TINTA }}>{anio}</p>
+        <button onClick={() => setAnio(anio + 1)} className="p-1" style={{ color: TINTA_SUAVE }}><ChevronRight size={18} /></button>
+      </div>
+
+      {gestor && (
+        <div className="mb-8">
+          <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Pendientes de responder ({pendientes.length})</p>
+          <div className="grid sm:grid-cols-2 gap-3 max-w-4xl">
+            {pendientes.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>No hay solicitudes pendientes.</p>}
+            {pendientes.map((a) => <div key={a.id}>{Fila({ a, conAcciones: true })}</div>)}
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Mi saldo {anio}</p>
+      <div className="max-w-xl mb-6">{Resumen({ s: yo })}</div>
+      <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Mis solicitudes</p>
+      <div className="grid sm:grid-cols-2 gap-3 max-w-4xl mb-8">
+        {mias.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Todavía no has pedido nada en {anio}.</p>}
+        {mias.map((a) => <div key={a.id}>{Fila({ a, conAcciones: false })}</div>)}
+      </div>
+
+      {gestor && (
+        <>
+          <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Equipo · saldos y horas {anio}</p>
+          <div className="grid sm:grid-cols-2 gap-3 max-w-4xl mb-8">{personas.map((p) => <div key={p}>{Resumen({ s: saldo(p), nombre: p })}</div>)}</div>
+          <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Historial del equipo {anio}</p>
+          <div className="grid sm:grid-cols-2 gap-3 max-w-4xl mb-8">
+            {delAnio.filter((a) => a.estado !== "pendiente").map((a) => <div key={a.id}>{Fila({ a, conAcciones: true })}</div>)}
+          </div>
+          <button onClick={() => setAjustes(true)} className="text-sm underline" style={{ color: VINO }}>Ajustar cifras del convenio</button>
+          <Modal open={ajustes} onClose={() => setAjustes(false)} title="Cifras del convenio">
+            <p className="text-xs mb-3" style={{ color: TINTA_SUAVE }}>Valores de partida del V Convenio de instalaciones deportivas. Cámbialos si tu convenio o contrato dice otra cosa.</p>
+            {[["vacDias", "Vacaciones (días laborables/año)"], ["asuntosDias", "Asuntos propios (días/año)"], ["medicaHoras", "Asistencia médica (horas/año)"], ["horasDia", "Horas por día de ausencia"], ["jornadaAnual", "Jornada anual (horas)"]].map(([k, l]) => (
+              <Field key={k} label={l}><input type="number" className={inputCls} style={inputStyle} defaultValue={cfg[k]} onBlur={(e) => { const v = Number(e.target.value); if (v > 0 && v !== cfg[k]) guardarCfg({ [k]: v }); }} /></Field>
+            ))}
+            <div className="mt-2"><BotonPrimario onClick={() => setAjustes(false)} icon={null}>Listo</BotonPrimario></div>
+          </Modal>
+        </>
+      )}
+
+      <Modal open={modal} onClose={() => setModal(false)} title="Solicitar ausencia">
+        <Field label="Tipo">
+          <select className={inputCls} style={inputStyle} value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}>
+            {Object.entries(TIPOS_AUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+          </select>
+        </Field>
+        {form.tipo === "medica" ? (
+          <>
+            <Field label="Día"><input type="date" className={inputCls} style={inputStyle} value={form.desde} onChange={(e) => setForm({ ...form, desde: e.target.value, hasta: e.target.value })} /></Field>
+            <Field label="Horas que te ausentas"><input type="number" step="0.5" min="0" className={inputCls} style={inputStyle} value={form.horas} onChange={(e) => setForm({ ...form, horas: e.target.value })} /></Field>
+          </>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Desde"><input type="date" className={inputCls} style={inputStyle} value={form.desde} onChange={(e) => cambiarFechas({ desde: e.target.value })} /></Field>
+              <Field label="Hasta"><input type="date" className={inputCls} style={inputStyle} value={form.hasta} min={form.desde} onChange={(e) => cambiarFechas({ hasta: e.target.value })} /></Field>
+            </div>
+            <Field label="Días a descontar (lunes a viernes; cámbialo si trabajas fines de semana)"><input type="number" min="0" className={inputCls} style={inputStyle} value={form.dias} onChange={(e) => setForm({ ...form, dias: e.target.value })} /></Field>
+          </>
+        )}
+        <Field label="Motivo (opcional)"><textarea rows={2} className={inputCls} style={inputStyle} value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} /></Field>
+        <div className="mt-2"><BotonPrimario onClick={enviar} icon={null}>Enviar solicitud</BotonPrimario></div>
       </Modal>
     </div>
   );

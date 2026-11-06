@@ -1020,64 +1020,167 @@ function tramosDeFichajes(lista) {
 }
 function hhmm(ms) { const m = Math.round(ms / 60000); return Math.floor(m / 60) + "h " + String(m % 60).padStart(2, "0") + "min"; }
 
-function InformeFichajes({ equipo, fichajes }) {
-  const nombres = [...new Set([...equipo.map((m) => m.nombre), ...fichajes.map((f) => f.empleado)].filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
-  const [empleado, setEmpleado] = useState("");
-  const [desde, setDesde] = useState("");
-  const [hasta, setHasta] = useState("");
-  const sel = empleado || nombres[0] || "";
-  const propios = fichajes.filter((f) => f.empleado === sel);
-  const dias = tramosDeFichajes(propios).filter((d) => (!desde || d.fecha >= desde) && (!hasta || d.fecha <= hasta));
-  const totalMs = dias.reduce((t, d) => t + d.ms, 0);
-  const txt = (f) => (f ? horaCorta(f.momento) : "--:--");
-  function descargar() {
-    const filas = [["Empleado", "Fecha", "Entrada", "Salida", "Punto", "Duracion tramo", "Total del dia"]];
-    dias.forEach((d) => d.tramos.forEach((t, i) => filas.push([
-      sel, fechaLegible(d.fecha), txt(t.ent), txt(t.sal), (t.ent || t.sal)?.puntoNombre || "",
-      (t.ent && t.sal) ? hhmm(t.sal.momento.toMillis() - t.ent.momento.toMillis()) : "incompleto",
-      i === 0 ? hhmm(d.ms) : "",
-    ])));
-    filas.push([]); filas.push(["TOTAL", "", "", "", "", "", hhmm(totalMs)]);
-    const csv = "\uFEFF" + filas.map((r) => r.map((c) => '"' + String(c ?? "").replace(/"/g, '""') + '"').join(";")).join("\r\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    const a = document.createElement("a"); a.href = url; a.download = "fichajes_" + sel.replace(/\s+/g, "_") + ".csv"; a.click(); URL.revokeObjectURL(url);
+// Cifras de referencia del V Convenio estatal de instalaciones deportivas y gimnasios (prorrogado)
+const JORNADA_ANUAL_H = 1752;
+
+function rangoInforme(modo, ancla, desdeC, hastaC) {
+  const y = Number(ancla.slice(0, 4)); const m = Number(ancla.slice(5, 7));
+  const pad = (n) => String(n).padStart(2, "0");
+  const finMes = (yy, mm) => new Date(yy, mm, 0).getDate();
+  if (modo === "dia") return { desde: ancla, hasta: ancla };
+  if (modo === "semana") { const l = lunesDeSemana(ancla); return { desde: l, hasta: sumarDiasISO(l, 6) }; }
+  if (modo === "mes") return { desde: `${y}-${pad(m)}-01`, hasta: `${y}-${pad(m)}-${pad(finMes(y, m))}` };
+  if (modo === "trimestre") { const q = Math.floor((m - 1) / 3); const m1 = q * 3 + 1; const m3 = m1 + 2; return { desde: `${y}-${pad(m1)}-01`, hasta: `${y}-${pad(m3)}-${pad(finMes(y, m3))}` }; }
+  if (modo === "anio") return { desde: `${y}-01-01`, hasta: `${y}-12-31` };
+  return { desde: desdeC || "2000-01-01", hasta: hastaC || "2999-12-31" };
+}
+function moverAncla(modo, ancla, dir) {
+  const y = Number(ancla.slice(0, 4)); const m = Number(ancla.slice(5, 7)); const d = ancla.slice(8, 10);
+  const pad = (n) => String(n).padStart(2, "0");
+  if (modo === "dia") return sumarDiasISO(ancla, dir);
+  if (modo === "semana") return sumarDiasISO(ancla, 7 * dir);
+  if (modo === "mes" || modo === "trimestre") {
+    const salto = modo === "mes" ? 1 : 3; const t = (y * 12 + (m - 1)) + dir * salto;
+    return `${Math.floor(t / 12)}-${pad((t % 12) + 1)}-01`;
   }
+  if (modo === "anio") return `${y + dir}-${pad(m)}-${d}`;
+  return ancla;
+}
+function etiquetaRango(modo, r) {
+  const mes = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+  if (modo === "dia") return fechaLegible(r.desde);
+  if (modo === "mes") return mes[Number(r.desde.slice(5, 7)) - 1] + " " + r.desde.slice(0, 4);
+  if (modo === "trimestre") return "T" + (Math.floor((Number(r.desde.slice(5, 7)) - 1) / 3) + 1) + " " + r.desde.slice(0, 4);
+  if (modo === "anio") return r.desde.slice(0, 4);
+  return fechaLegible(r.desde) + " - " + fechaLegible(r.hasta);
+}
+
+function InformeFichajes({ equipo, fichajes }) {
+  const hoyISO = fechaISO(new Date());
+  const nombres = [...new Set([...equipo.map((m) => m.nombre), ...fichajes.map((f) => f.empleado)].filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+  const [empleado, setEmpleado] = useState("__todos");
+  const [modo, setModo] = useState("mes");
+  const [ancla, setAncla] = useState(hoyISO);
+  const [desdeC, setDesdeC] = useState("");
+  const [hastaC, setHastaC] = useState("");
+  const r = rangoInforme(modo, ancla, desdeC, hastaC);
+  const enRango = (f) => { const k = fechaISO(f.momento); return k >= r.desde && k <= r.hasta; };
+  const todos = empleado === "__todos";
+  const lista = todos ? nombres : [empleado];
+  const resumen = lista.map((n) => {
+    const dias = tramosDeFichajes(fichajes.filter((f) => f.empleado === n && enRango(f)));
+    const ms = dias.reduce((t, d) => t + d.ms, 0);
+    const anioMs = tramosDeFichajes(fichajes.filter((f) => f.empleado === n && fechaISO(f.momento).slice(0, 4) === r.desde.slice(0, 4))).reduce((t, d) => t + d.ms, 0);
+    return { nombre: n, dias, ms, incompletos: dias.filter((d) => d.incompleto).length, anioMs };
+  });
+  const detalle = todos ? null : resumen[0];
+  const totalMs = resumen.reduce((t, x) => t + x.ms, 0);
+  const txt = (f) => (f ? horaCorta(f.momento) : "--:--");
+  const MODOS = [["dia", "Dia"], ["semana", "Semana"], ["mes", "Mes"], ["trimestre", "Trimestre"], ["anio", "Ano"], ["custom", "Personalizado"]];
+
+  function bajar(csv, nombre) {
+    const url = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a"); a.href = url; a.download = nombre; a.click(); URL.revokeObjectURL(url);
+  }
+  const celda = (c) => '"' + String(c ?? "").replace(/"/g, '""') + '"';
+  function descargar() {
+    const filas = [];
+    if (todos) {
+      filas.push(["Empleado", "Periodo", "Dias fichados", "Horas trabajadas", "Media por dia", "Dias incompletos", "Horas acumuladas en el ano"]);
+      resumen.forEach((x) => filas.push([x.nombre, etiquetaRango(modo, r), x.dias.length, hhmm(x.ms), x.dias.length ? hhmm(x.ms / x.dias.length) : "", x.incompletos, hhmm(x.anioMs)]));
+    } else {
+      filas.push(["Empleado", "Fecha", "Entrada", "Salida", "Punto", "Duracion tramo", "Total del dia"]);
+      detalle.dias.forEach((d) => d.tramos.forEach((t, i) => filas.push([
+        detalle.nombre, fechaLegible(d.fecha), txt(t.ent), txt(t.sal), (t.ent || t.sal)?.puntoNombre || "",
+        (t.ent && t.sal) ? hhmm(t.sal.momento.toMillis() - t.ent.momento.toMillis()) : "incompleto", i === 0 ? hhmm(d.ms) : "",
+      ])));
+      filas.push([]); filas.push(["TOTAL", etiquetaRango(modo, r), "", "", "", "", hhmm(totalMs)]);
+    }
+    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_" + (todos ? "todos" : empleado.replace(/\s+/g, "_")) + "_" + modo + "_" + r.desde + ".csv");
+  }
+
   return (
     <div className="mt-10">
       <p className="text-sm font-medium mb-3" style={{ color: TINTA }}>Informe de fichajes</p>
       <Tarjeta className="p-4 mb-4">
+        <div className="flex flex-wrap gap-2 mb-3">
+          {MODOS.map(([id, nom]) => <PillFiltro key={id} activo={modo === id} onClick={() => setModo(id)}>{nom}</PillFiltro>)}
+        </div>
         <div className="grid sm:grid-cols-3 gap-3 items-end">
           <Field label="Empleado">
-            <select className={inputCls} style={inputStyle} value={sel} onChange={(e) => setEmpleado(e.target.value)}>
+            <select className={inputCls} style={inputStyle} value={empleado} onChange={(e) => setEmpleado(e.target.value)}>
+              <option value="__todos">Todos (resumen)</option>
               {nombres.map((n) => <option key={n}>{n}</option>)}
             </select>
           </Field>
-          <Field label="Desde"><input type="date" className={inputCls} style={inputStyle} value={desde} onChange={(e) => setDesde(e.target.value)} /></Field>
-          <Field label="Hasta"><input type="date" className={inputCls} style={inputStyle} value={hasta} onChange={(e) => setHasta(e.target.value)} /></Field>
+          {modo === "custom" ? (
+            <>
+              <Field label="Desde"><input type="date" className={inputCls} style={inputStyle} value={desdeC} onChange={(e) => setDesdeC(e.target.value)} /></Field>
+              <Field label="Hasta"><input type="date" className={inputCls} style={inputStyle} value={hastaC} onChange={(e) => setHastaC(e.target.value)} /></Field>
+            </>
+          ) : (
+            <div className="sm:col-span-2 flex items-center gap-2">
+              <button onClick={() => setAncla(moverAncla(modo, ancla, -1))} className="p-2 rounded-lg border" style={{ borderColor: PAPEL_LINEA, color: TINTA }}><ChevronLeft size={16} /></button>
+              <input type="date" className={inputCls} style={inputStyle} value={ancla} onChange={(e) => e.target.value && setAncla(e.target.value)} />
+              <button onClick={() => setAncla(moverAncla(modo, ancla, 1))} className="p-2 rounded-lg border" style={{ borderColor: PAPEL_LINEA, color: TINTA }}><ChevronRight size={16} /></button>
+            </div>
+          )}
         </div>
         <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
-          <p className="text-sm" style={{ color: TINTA_SUAVE }}>{dias.length} dias con fichajes · <b style={{ color: TINTA }}>Total {hhmm(totalMs)}</b></p>
+          <p className="text-sm" style={{ color: TINTA_SUAVE }}><b style={{ color: TINTA }}>{etiquetaRango(modo, r)}</b> · Total {hhmm(totalMs)}</p>
           <div className="flex gap-2">
             <BotonSecundario onClick={descargar}>Descargar Excel (CSV)</BotonSecundario>
             <BotonSecundario onClick={() => window.print()}>Imprimir</BotonSecundario>
           </div>
         </div>
       </Tarjeta>
-      <div className="space-y-2">
-        {dias.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Sin fichajes en ese periodo.</p>}
-        {[...dias].reverse().map((d) => (
-          <Tarjeta key={d.fecha} className="p-3 flex items-center justify-between gap-3 flex-wrap">
-            <div>
-              <p className="font-medium text-sm" style={{ color: TINTA }}>{fechaLegible(d.fecha)}</p>
-              <p className="text-xs num" style={{ color: TINTA_SUAVE }}>{d.tramos.map((t) => txt(t.ent) + " - " + txt(t.sal)).join("   ·   ")}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              {d.incompleto && <Badge tone="rojo">Falta entrada o salida</Badge>}
-              <span className="text-sm num font-medium" style={{ color: TINTA }}>{hhmm(d.ms)}</span>
-            </div>
-          </Tarjeta>
-        ))}
-      </div>
+
+      {todos && (
+        <div className="space-y-2">
+          {resumen.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Sin empleados.</p>}
+          {resumen.map((x) => (
+            <Tarjeta key={x.nombre} className="p-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div>
+                  <p className="font-medium" style={{ color: TINTA }}>{x.nombre}</p>
+                  <p className="text-xs" style={{ color: TINTA_SUAVE }}>{x.dias.length} dias fichados{x.dias.length ? " · media " + hhmm(x.ms / x.dias.length) + " al dia" : ""}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {x.incompletos > 0 && <Badge tone="rojo">{x.incompletos} dia{x.incompletos !== 1 ? "s" : ""} incompleto{x.incompletos !== 1 ? "s" : ""}</Badge>}
+                  <span className="text-lg num font-semibold" style={{ color: TINTA }}>{hhmm(x.ms)}</span>
+                </div>
+              </div>
+              <div className="mt-2">
+                <div className="flex justify-between text-xs mb-1" style={{ color: TINTA_SUAVE }}>
+                  <span>Acumulado {r.desde.slice(0, 4)}: {hhmm(x.anioMs)}</span><span>Jornada anual: {JORNADA_ANUAL_H} h</span>
+                </div>
+                <div className="h-2 rounded-full" style={{ background: PAPEL_LINEA }}>
+                  <div className="h-2 rounded-full" style={{ width: Math.min(100, (x.anioMs / 3600000 / JORNADA_ANUAL_H) * 100) + "%", background: SALVIA }} />
+                </div>
+              </div>
+            </Tarjeta>
+          ))}
+        </div>
+      )}
+
+      {!todos && (
+        <div className="space-y-2">
+          <p className="text-xs" style={{ color: TINTA_SUAVE }}>Acumulado del ano {r.desde.slice(0, 4)}: <b style={{ color: TINTA }}>{hhmm(detalle.anioMs)}</b> de {JORNADA_ANUAL_H} h de jornada anual.</p>
+          {detalle.dias.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Sin fichajes en ese periodo.</p>}
+          {[...detalle.dias].reverse().map((d) => (
+            <Tarjeta key={d.fecha} className="p-3 flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="font-medium text-sm" style={{ color: TINTA }}>{fechaLegible(d.fecha)}</p>
+                <p className="text-xs num" style={{ color: TINTA_SUAVE }}>{d.tramos.map((t) => txt(t.ent) + " - " + txt(t.sal)).join("   ·   ")}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {d.incompleto && <Badge tone="rojo">Falta entrada o salida</Badge>}
+                <span className="text-sm num font-medium" style={{ color: TINTA }}>{hhmm(d.ms)}</span>
+              </div>
+            </Tarjeta>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

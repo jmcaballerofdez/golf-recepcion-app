@@ -549,7 +549,7 @@ export default function App() {
           {vista === "incidencias" && <Incidencias />}
           {vista === "equipo" && puedeGestionEquipo && <Equipo />}
           {vista === "tipos_tarea" && esSuperadmin && <TiposTareaChecklist />}
-          {vista === "fichajes" && <Fichajes />}
+          {vista === "fichajes" && <Fichajes puedeInforme={puedeGestionEquipo} />}
           {vista === "puntos_qr" && esSuperadmin && <PuntosQR />}
         </div>
       </main>
@@ -646,7 +646,10 @@ function Dashboard({ irA }) {
 }
 
 function Equipo() {
-  const { datos: equipo } = useColeccion("recep_equipo", "nombre", "asc");
+  const { datos: equipoTodos } = useColeccion("recep_equipo", "nombre", "asc");
+  const [verBajas, setVerBajas] = useState(false);
+  const equipo = equipoTodos.filter((m) => verBajas ? !!m.baja : !m.baja);
+  const hayBajas = equipoTodos.some((m) => m.baja);
   const [modal, setModal] = useState(false);
   const [editando, setEditando] = useState(null);
   const vacio = { nombre: "", rol: "", telefono: "" };
@@ -666,13 +669,21 @@ function Equipo() {
       <Cabecera titulo="Equipo" subtitulo="Personal de recepcion del club.">
         <BotonPrimario onClick={abrirNuevo}>Anadir</BotonPrimario>
       </Cabecera>
+      {hayBajas && (
+        <div className="flex gap-2 mb-4">
+          <PillFiltro activo={!verBajas} onClick={() => setVerBajas(false)}>En plantilla</PillFiltro>
+          <PillFiltro activo={verBajas} onClick={() => setVerBajas(true)}>Bajas</PillFiltro>
+        </div>
+      )}
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {equipo.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>{verBajas ? "No hay bajas." : "Nadie en plantilla."}</p>}
         {equipo.map((m) => (
           <Tarjeta key={m.id} className="p-4">
             <div className="flex items-start justify-between">
               <div>
                 <p className="font-medium" style={{ color: TINTA }}>{m.nombre}</p>
                 <p className="text-sm" style={{ color: TINTA_SUAVE }}>{m.rol}</p>
+                {m.baja && <p className="text-xs mt-1" style={{ color: LADRILLO }}>Baja desde {fechaLegible(m.fechaBaja)}</p>}
                 {m.telefono && <p className="text-xs mt-1 num" style={{ color: TINTA_TENUE }}>{m.telefono}</p>}
               </div>
               <button onClick={() => abrirEditar(m)} className="p-1 rounded transition" style={{ color: TINTA_TENUE }}>
@@ -688,9 +699,19 @@ function Equipo() {
         <Field label="Telefono (opcional)"><input className={inputCls} style={inputStyle} value={form.telefono} onChange={(e) => setForm({ ...form, telefono: e.target.value })} /></Field>
         <div className="flex items-center justify-between mt-2">
           {editando ? (
-            <button onClick={async () => { await borrarDoc("recep_equipo", editando.id); setModal(false); }} className="inline-flex items-center gap-1.5 text-sm" style={{ color: LADRILLO }}>
-              <Trash2 size={14} /> Eliminar
-            </button>
+            editando.baja ? (
+              <button onClick={async () => { await actualizarDoc("recep_equipo", editando.id, { baja: false, fechaBaja: "" }); setModal(false); }} className="inline-flex items-center gap-1.5 text-sm" style={{ color: VINO }}>
+                <Check size={14} /> Volver a la plantilla
+              </button>
+            ) : (
+              <button onClick={async () => {
+                if (!confirm("Dar de baja a " + editando.nombre + "? Dejara de aparecer en turnos y fichajes, pero se conservan todos sus fichajes (hay que guardarlos por ley).")) return;
+                await actualizarDoc("recep_equipo", editando.id, { baja: true, fechaBaja: fechaISO(new Date()) });
+                setModal(false);
+              }} className="inline-flex items-center gap-1.5 text-sm" style={{ color: LADRILLO }}>
+                <Trash2 size={14} /> Dar de baja
+              </button>
+            )
           ) : <span />}
           <BotonPrimario onClick={guardar} icon={null}>Guardar</BotonPrimario>
         </div>
@@ -897,7 +918,8 @@ function Checklist({ usuario, nombreOperario }) {
 
 function Incidencias() {
   const { datos: incidencias } = useColeccion("recep_incidencias", "creadoEn", "desc");
-  const { datos: equipo } = useColeccion("recep_equipo", "nombre", "asc");
+  const { datos: equipoTodos } = useColeccion("recep_equipo", "nombre", "asc");
+  const equipo = equipoTodos.filter((m) => !m.baja);
   const [filtroEstado, setFiltroEstado] = useState("Todas");
   const [modal, setModal] = useState(false);
   const [editando, setEditando] = useState(null);
@@ -980,8 +1002,89 @@ function ultimoEstadoFichaje(fichajes, nombre) {
   return delEmpleado[0].tipo === "entrada" ? "dentro" : "fuera";
 }
 
-function Fichajes() {
-  const { datos: equipo } = useColeccion("recep_equipo", "nombre", "asc");
+// Empareja entradas y salidas de un empleado en tramos por dia
+function tramosDeFichajes(lista) {
+  const asc = [...lista].sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
+  const dias = {};
+  asc.forEach((f) => { const k = fechaISO(f.momento); (dias[k] = dias[k] || []).push(f); });
+  return Object.keys(dias).sort().map((fecha) => {
+    const tramos = []; let abierta = null;
+    dias[fecha].forEach((f) => {
+      if (f.tipo === "entrada") { if (abierta) tramos.push({ ent: abierta, sal: null }); abierta = f; }
+      else { tramos.push({ ent: abierta, sal: f }); abierta = null; }
+    });
+    if (abierta) tramos.push({ ent: abierta, sal: null });
+    const ms = tramos.reduce((t, x) => (x.ent && x.sal) ? t + (x.sal.momento.toMillis() - x.ent.momento.toMillis()) : t, 0);
+    return { fecha, tramos, ms, incompleto: tramos.some((x) => !x.ent || !x.sal) };
+  });
+}
+function hhmm(ms) { const m = Math.round(ms / 60000); return Math.floor(m / 60) + "h " + String(m % 60).padStart(2, "0") + "min"; }
+
+function InformeFichajes({ equipo, fichajes }) {
+  const nombres = [...new Set([...equipo.map((m) => m.nombre), ...fichajes.map((f) => f.empleado)].filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+  const [empleado, setEmpleado] = useState("");
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const sel = empleado || nombres[0] || "";
+  const propios = fichajes.filter((f) => f.empleado === sel);
+  const dias = tramosDeFichajes(propios).filter((d) => (!desde || d.fecha >= desde) && (!hasta || d.fecha <= hasta));
+  const totalMs = dias.reduce((t, d) => t + d.ms, 0);
+  const txt = (f) => (f ? horaCorta(f.momento) : "--:--");
+  function descargar() {
+    const filas = [["Empleado", "Fecha", "Entrada", "Salida", "Punto", "Duracion tramo", "Total del dia"]];
+    dias.forEach((d) => d.tramos.forEach((t, i) => filas.push([
+      sel, fechaLegible(d.fecha), txt(t.ent), txt(t.sal), (t.ent || t.sal)?.puntoNombre || "",
+      (t.ent && t.sal) ? hhmm(t.sal.momento.toMillis() - t.ent.momento.toMillis()) : "incompleto",
+      i === 0 ? hhmm(d.ms) : "",
+    ])));
+    filas.push([]); filas.push(["TOTAL", "", "", "", "", "", hhmm(totalMs)]);
+    const csv = "\uFEFF" + filas.map((r) => r.map((c) => '"' + String(c ?? "").replace(/"/g, '""') + '"').join(";")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a"); a.href = url; a.download = "fichajes_" + sel.replace(/\s+/g, "_") + ".csv"; a.click(); URL.revokeObjectURL(url);
+  }
+  return (
+    <div className="mt-10">
+      <p className="text-sm font-medium mb-3" style={{ color: TINTA }}>Informe de fichajes</p>
+      <Tarjeta className="p-4 mb-4">
+        <div className="grid sm:grid-cols-3 gap-3 items-end">
+          <Field label="Empleado">
+            <select className={inputCls} style={inputStyle} value={sel} onChange={(e) => setEmpleado(e.target.value)}>
+              {nombres.map((n) => <option key={n}>{n}</option>)}
+            </select>
+          </Field>
+          <Field label="Desde"><input type="date" className={inputCls} style={inputStyle} value={desde} onChange={(e) => setDesde(e.target.value)} /></Field>
+          <Field label="Hasta"><input type="date" className={inputCls} style={inputStyle} value={hasta} onChange={(e) => setHasta(e.target.value)} /></Field>
+        </div>
+        <div className="flex items-center justify-between mt-3 flex-wrap gap-2">
+          <p className="text-sm" style={{ color: TINTA_SUAVE }}>{dias.length} dias con fichajes · <b style={{ color: TINTA }}>Total {hhmm(totalMs)}</b></p>
+          <div className="flex gap-2">
+            <BotonSecundario onClick={descargar}>Descargar Excel (CSV)</BotonSecundario>
+            <BotonSecundario onClick={() => window.print()}>Imprimir</BotonSecundario>
+          </div>
+        </div>
+      </Tarjeta>
+      <div className="space-y-2">
+        {dias.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Sin fichajes en ese periodo.</p>}
+        {[...dias].reverse().map((d) => (
+          <Tarjeta key={d.fecha} className="p-3 flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <p className="font-medium text-sm" style={{ color: TINTA }}>{fechaLegible(d.fecha)}</p>
+              <p className="text-xs num" style={{ color: TINTA_SUAVE }}>{d.tramos.map((t) => txt(t.ent) + " - " + txt(t.sal)).join("   ·   ")}</p>
+            </div>
+            <div className="flex items-center gap-2">
+              {d.incompleto && <Badge tone="rojo">Falta entrada o salida</Badge>}
+              <span className="text-sm num font-medium" style={{ color: TINTA }}>{hhmm(d.ms)}</span>
+            </div>
+          </Tarjeta>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Fichajes({ puedeInforme }) {
+  const { datos: equipoTodos } = useColeccion("recep_equipo", "nombre", "asc");
+  const equipo = equipoTodos.filter((m) => !m.baja);
   const { datos: fichajes } = useColeccion("recep_fichajes", "momento", "desc");
   const hoy = fechaISO(new Date());
   const fichajesHoy = fichajes.filter((f) => fechaISO(f.momento) === hoy);
@@ -1014,6 +1117,7 @@ function Fichajes() {
           </Tarjeta>
         ))}
       </div>
+      {puedeInforme && <InformeFichajes equipo={equipoTodos} fichajes={fichajes} />}
     </div>
   );
 }
@@ -1050,7 +1154,8 @@ function Turnos({ nombreOperario, puedeEditar }) {
   const [lunesActual, setLunesActual] = useState(lunesDeSemana(hoy));
   const dias = Array.from({ length: 7 }, (_, i) => sumarDiasISO(lunesActual, i));
 
-  const { datos: equipo } = useColeccion("recep_equipo", "nombre", "asc");
+  const { datos: equipoTodos } = useColeccion("recep_equipo", "nombre", "asc");
+  const equipo = equipoTodos.filter((m) => !m.baja);
   const { datos: turnosTodos } = useColeccion("recep_turnos", "lunes", "desc");
   const { datos: tareasTodas } = useColeccion("recep_tareas_asignadas", "creadoEn", "desc");
 

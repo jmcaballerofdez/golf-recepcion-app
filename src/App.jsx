@@ -759,9 +759,18 @@ function Equipo() {
         <div className="flex items-center justify-between mt-2">
           {editando ? (
             editando.baja ? (
+              <div className="flex flex-col gap-2 items-start">
               <button onClick={async () => { await actualizarDoc("recep_equipo", editando.id, { baja: false, fechaBaja: "" }); setModal(false); }} className="inline-flex items-center gap-1.5 text-sm" style={{ color: VINO }}>
                 <Check size={14} /> Volver a la plantilla
               </button>
+              <button onClick={async () => {
+                if (!confirm("Eliminar del todo a " + editando.nombre + " de la lista del equipo? Sus fichajes NO se borran (se conservan por ley), pero ya no podras volver a ponerlo en plantilla.")) return;
+                await borrarDoc("recep_equipo", editando.id);
+                setModal(false);
+              }} className="inline-flex items-center gap-1.5 text-sm" style={{ color: LADRILLO }}>
+                <Trash2 size={14} /> Eliminar de la lista
+              </button>
+              </div>
             ) : (
               <button onClick={async () => {
                 if (!confirm("Dar de baja a " + editando.nombre + "? Dejara de aparecer en turnos y fichajes, pero se conservan todos sus fichajes (hay que guardarlos por ley).")) return;
@@ -1761,14 +1770,14 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
           <>
             <p className="font-medium mb-2" style={{ color: TINTA, fontFamily: SERIF }}>Codigo QR no reconocido</p>
             <p className="text-sm mb-4" style={{ color: TINTA_SUAVE }}>Este punto de fichaje no existe o ha sido eliminado.</p>
-            <BotonPrimario onClick={volver} icon={null}>Volver a la app</BotonPrimario>
+            <BotonPrimario onClick={volver} icon={null}>Ir al menu de la app</BotonPrimario>
           </>
         )}
         {punto && hecho && (
           <>
             <p className="font-medium text-lg mb-2" style={{ color: TINTA, fontFamily: SERIF }}>{hecho === "entrada" ? "Entrada registrada" : "Salida registrada"}</p>
             <p className="text-sm mb-4" style={{ color: TINTA_SUAVE }}>{punto.nombre} - {nombreOperario}</p>
-            <BotonPrimario onClick={volver} icon={null}>Volver a la app</BotonPrimario>
+            <BotonPrimario onClick={volver} icon={null}>Ir al menu de la app</BotonPrimario>
           </>
         )}
         {punto && !hecho && (
@@ -1799,6 +1808,7 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
             <BotonPrimario onClick={confirmar} icon={null} disabled={!dentroDeRango || guardando}>
               {guardando ? "Registrando..." : `Confirmar ${tipo}`}
             </BotonPrimario>
+            <button onClick={volver} className="block mx-auto mt-4 text-sm underline" style={{ color: VINO }}>Ir al menu de la app</button>
           </>
         )}
       </Tarjeta>

@@ -1116,8 +1116,14 @@ function etiquetaRango(modo, r) {
 
 function InformeFichajes({ equipo, fichajes }) {
   const hoyISO = fechaISO(new Date());
-  const nombres = [...new Set([...equipo.map((m) => m.nombre), ...fichajes.map((f) => f.empleado)].filter(Boolean))].sort((a, b) => a.localeCompare(b, "es"));
+  // Agrupa los nombres que solo se diferencian en mayusculas, tildes o espacios (p. ej. "Cristina Perez" y "Cristina Pérez")
+  const norm = (n) => String(n || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  const mapaP = {};
+  equipo.forEach((m) => { if (!m.nombre) return; const k = norm(m.nombre); (mapaP[k] = mapaP[k] || { key: k, nombre: m.nombre, set: new Set() }).set.add(m.nombre); });
+  fichajes.forEach((f) => { if (!f.empleado) return; const k = norm(f.empleado); (mapaP[k] = mapaP[k] || { key: k, nombre: f.empleado, set: new Set() }).set.add(f.empleado); });
+  const personas = Object.values(mapaP).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const [empleado, setEmpleado] = useState("__todos");
+  const [extras, setExtras] = useState([]); // otros nombres que el admin marca como de la misma persona
   const [modo, setModo] = useState("mes");
   const [ancla, setAncla] = useState(hoyISO);
   const [desdeC, setDesdeC] = useState("");
@@ -1130,13 +1136,17 @@ function InformeFichajes({ equipo, fichajes }) {
   const r = rangoInforme(modo, ancla, desdeC, hastaC);
   const enRango = (f) => { const k = fechaISO(f.momento); return k >= r.desde && k <= r.hasta; };
   const todos = empleado === "__todos";
-  const lista = todos ? nombres : [empleado];
-  const resumen = lista.map((n) => {
-    const dias = tramosDeFichajes(fichajes.filter((f) => f.empleado === n && enRango(f)));
+  const personaSel = todos ? null : (mapaP[empleado] || { key: empleado, nombre: empleado, set: new Set() });
+  const selNombre = personaSel ? personaSel.nombre : "todos";
+  const selSet = personaSel ? new Set([...personaSel.set, ...extras]) : null;
+  const lista = todos ? personas : [{ ...personaSel, set: selSet }];
+  const resumen = lista.map((p) => {
+    const dias = tramosDeFichajes(fichajes.filter((f) => p.set.has(f.empleado) && enRango(f)));
     const ms = dias.reduce((t, d) => t + d.ms, 0);
-    const anioMs = tramosDeFichajes(fichajes.filter((f) => f.empleado === n && fechaISO(f.momento).slice(0, 4) === r.desde.slice(0, 4))).reduce((t, d) => t + d.ms, 0);
-    return { nombre: n, dias, ms, incompletos: dias.filter((d) => d.incompleto).length, anioMs };
+    const anioMs = tramosDeFichajes(fichajes.filter((f) => p.set.has(f.empleado) && fechaISO(f.momento).slice(0, 4) === r.desde.slice(0, 4))).reduce((t, d) => t + d.ms, 0);
+    return { nombre: p.nombre, dias, ms, incompletos: dias.filter((d) => d.incompleto).length, anioMs };
   });
+  const otrosNombres = todos ? [] : Object.values(mapaP).filter((p) => p.key !== personaSel.key).flatMap((p) => [...p.set]);
   const detalle = todos ? null : resumen[0];
   const totalMs = resumen.reduce((t, x) => t + x.ms, 0);
   const txt = (f) => (f ? horaCorta(f.momento) : "--:--");
@@ -1151,16 +1161,16 @@ function InformeFichajes({ equipo, fichajes }) {
   const cuentas = {};
   fichajes.forEach((f) => { if (f.empleado) cuentas[f.empleado] = (cuentas[f.empleado] || 0) + 1; });
   function descargarBruto() {
-    const sel = fichajes.filter((f) => todos || f.empleado === empleado)
+    const sel = fichajes.filter((f) => todos || selSet.has(f.empleado))
       .sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
     const filas = [["Fecha", "Hora", "Empleado", "Tipo", "Punto", "Origen", "Distancia al punto (m)", "Precision GPS (m)", "Latitud", "Longitud"]];
     sel.forEach((f) => filas.push([fechaLegible(fechaISO(f.momento)), horaCorta(f.momento), f.empleado || "", f.tipo || "", f.puntoNombre || "", f.origen || "", f.distanciaM ?? "", f.precisionM ?? "", f.lat ?? "", f.lng ?? ""]));
-    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_registro_completo_" + (todos ? "todos" : empleado.replace(/\s+/g, "_")) + ".csv");
+    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_registro_completo_" + (todos ? "todos" : selNombre.replace(/\s+/g, "_")) + ".csv");
   }
   // Todo lo que consta de un empleado: fichajes, turnos, tareas, ventas, incidencias y checklist
   function descargarTodoEmpleado() {
-    const n = (empleado || "").trim().toLowerCase();
-    const es = (v) => String(v || "").trim().toLowerCase() === n;
+    const normSet = new Set([...selSet].map(norm));
+    const es = (v) => normSet.has(norm(v));
     const filas = [];
     const sec = (titulo, cab, datos) => { filas.push([titulo]); filas.push(cab); datos.forEach((x) => filas.push(x)); filas.push([]); };
     const fich = fichajes.filter((f) => es(f.empleado)).sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
@@ -1177,7 +1187,7 @@ function InformeFichajes({ equipo, fichajes }) {
     sec("INCIDENCIAS REPORTADAS (" + inc.length + ")", ["Fecha", "Titulo", "Gravedad", "Estado"], inc.map((i) => [fechaCorta(i.creadoEn), i.titulo || "", i.gravedad || "", i.estado || ""]));
     const chk = checkTodos.filter((c) => es(c.actualizadoPor));
     sec("CHECKLIST ACTUALIZADO (" + chk.length + " dias)", ["Fecha", "Tareas hechas"], chk.map((c) => [fechaLegible(c.fecha), (c.hechas || []).length]));
-    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "registros_completos_" + empleado.replace(/\s+/g, "_") + ".csv");
+    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "registros_completos_" + selNombre.replace(/\s+/g, "_") + ".csv");
   }
   function descargar() {
     const filas = [];
@@ -1192,7 +1202,7 @@ function InformeFichajes({ equipo, fichajes }) {
       ])));
       filas.push([]); filas.push(["TOTAL", etiquetaRango(modo, r), "", "", "", "", hhmm(totalMs)]);
     }
-    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_" + (todos ? "todos" : empleado.replace(/\s+/g, "_")) + "_" + modo + "_" + r.desde + ".csv");
+    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_" + (todos ? "todos" : selNombre.replace(/\s+/g, "_")) + "_" + modo + "_" + r.desde + ".csv");
   }
 
   return (
@@ -1204,9 +1214,9 @@ function InformeFichajes({ equipo, fichajes }) {
         </div>
         <div className="grid sm:grid-cols-3 gap-3 items-end">
           <Field label="Empleado">
-            <select className={inputCls} style={inputStyle} value={empleado} onChange={(e) => setEmpleado(e.target.value)}>
+            <select className={inputCls} style={inputStyle} value={empleado} onChange={(e) => { setEmpleado(e.target.value); setExtras([]); }}>
               <option value="__todos">Todos (resumen)</option>
-              {nombres.map((n) => <option key={n}>{n}</option>)}
+              {personas.map((p) => <option key={p.key} value={p.key}>{p.nombre}</option>)}
             </select>
           </Field>
           {modo === "custom" ? (
@@ -1227,10 +1237,23 @@ function InformeFichajes({ equipo, fichajes }) {
           <div className="flex gap-2">
             <BotonSecundario onClick={descargar}>Descargar Excel (CSV)</BotonSecundario>
             <BotonSecundario onClick={descargarBruto}>Registro completo (todas las fechas)</BotonSecundario>
-            {!todos && <BotonSecundario onClick={descargarTodoEmpleado}>Todo lo de {empleado.split(" ")[0]} (fichajes, turnos, ventas...)</BotonSecundario>}
+            {!todos && <BotonSecundario onClick={descargarTodoEmpleado}>Todo lo de {selNombre.split(" ")[0]} (fichajes, turnos, ventas...)</BotonSecundario>}
             <BotonSecundario onClick={() => window.print()}>Imprimir</BotonSecundario>
           </div>
         </div>
+        {!todos && otrosNombres.length > 0 && (
+          <div className="mt-3 text-xs" style={{ color: TINTA_SUAVE }}>
+            <p className="mb-1">Si {selNombre} tambien ficho con otro nombre, marcalo para incluirlo:</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {otrosNombres.map((n) => (
+                <label key={n} className="inline-flex items-center gap-1.5 cursor-pointer">
+                  <input type="checkbox" checked={extras.includes(n)} onChange={(e) => setExtras(e.target.checked ? [...extras, n] : extras.filter((x) => x !== n))} />
+                  {n}{cuentas[n] ? " (" + cuentas[n] + ")" : ""}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
         <p className="text-xs mt-3" style={{ color: TINTA_SUAVE }}>
           Fichajes guardados por nombre: {Object.keys(cuentas).length === 0 ? "ninguno" : Object.entries(cuentas).sort((a, b) => a[0].localeCompare(b[0], "es")).map(([n, c]) => n + " (" + c + ")").join(" · ")}
         </p>

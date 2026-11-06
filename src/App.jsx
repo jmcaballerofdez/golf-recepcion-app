@@ -1280,6 +1280,9 @@ function Ausencias({ nombreOperario, gestor }) {
         {a.estado === "pendiente" && !conAcciones && (
           <button onClick={async () => { if (confirm("Cancelar esta solicitud?")) await borrarDoc("recep_ausencias", a.id); }} className="mt-2 text-xs" style={{ color: LADRILLO }}>Cancelar solicitud</button>
         )}
+        {gestor && conAcciones && (
+          <button onClick={async () => { if (confirm("Eliminar esta solicitud de " + a.empleado + "? Se borra del todo y deja de contar en su saldo.")) await borrarDoc("recep_ausencias", a.id); }} className="block mt-2 text-xs" style={{ color: LADRILLO }}>Eliminar solicitud</button>
+        )}
         {gestor && a.estado !== "pendiente" && conAcciones && (
           <button onClick={() => actualizarDoc("recep_ausencias", a.id, { estado: "pendiente", respuesta: "" })} className="mt-2 text-xs" style={{ color: TINTA_TENUE }}>Volver a pendiente</button>
         )}

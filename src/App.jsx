@@ -1142,6 +1142,16 @@ function InformeFichajes({ equipo, fichajes }) {
     const a = document.createElement("a"); a.href = url; a.download = nombre; a.click(); URL.revokeObjectURL(url);
   }
   const celda = (c) => '"' + String(c ?? "").replace(/"/g, '""') + '"';
+  // Registro completo en bruto (todos los fichajes, sin filtrar por fechas) del empleado elegido o de todos
+  const cuentas = {};
+  fichajes.forEach((f) => { if (f.empleado) cuentas[f.empleado] = (cuentas[f.empleado] || 0) + 1; });
+  function descargarBruto() {
+    const sel = fichajes.filter((f) => todos || f.empleado === empleado)
+      .sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
+    const filas = [["Fecha", "Hora", "Empleado", "Tipo", "Punto", "Origen", "Distancia al punto (m)", "Precision GPS (m)", "Latitud", "Longitud"]];
+    sel.forEach((f) => filas.push([fechaLegible(fechaISO(f.momento)), horaCorta(f.momento), f.empleado || "", f.tipo || "", f.puntoNombre || "", f.origen || "", f.distanciaM ?? "", f.precisionM ?? "", f.lat ?? "", f.lng ?? ""]));
+    bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_registro_completo_" + (todos ? "todos" : empleado.replace(/\s+/g, "_")) + ".csv");
+  }
   function descargar() {
     const filas = [];
     if (todos) {
@@ -1189,9 +1199,13 @@ function InformeFichajes({ equipo, fichajes }) {
           <p className="text-sm" style={{ color: TINTA_SUAVE }}><b style={{ color: TINTA }}>{etiquetaRango(modo, r)}</b> · Total {hhmm(totalMs)}</p>
           <div className="flex gap-2">
             <BotonSecundario onClick={descargar}>Descargar Excel (CSV)</BotonSecundario>
+            <BotonSecundario onClick={descargarBruto}>Registro completo (todas las fechas)</BotonSecundario>
             <BotonSecundario onClick={() => window.print()}>Imprimir</BotonSecundario>
           </div>
         </div>
+        <p className="text-xs mt-3" style={{ color: TINTA_SUAVE }}>
+          Fichajes guardados por nombre: {Object.keys(cuentas).length === 0 ? "ninguno" : Object.entries(cuentas).sort((a, b) => a[0].localeCompare(b[0], "es")).map(([n, c]) => n + " (" + c + ")").join(" · ")}
+        </p>
       </Tarjeta>
 
       {todos && (

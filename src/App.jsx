@@ -9,6 +9,7 @@ import {
   LayoutDashboard, Users, AlertTriangle, ClipboardCheck, Wallet,
   Plus, Pencil, Trash2, X, Menu, LogOut, Check, Loader2, Shield, Lock,
   GraduationCap, ShoppingCart, Tractor, Home, Settings, MapPin, Clock,
+  Calendar, ChevronLeft, ChevronRight,
 } from "lucide-react";
 
 // --- Firebase Config ---
@@ -26,7 +27,7 @@ const auth = getAuth(app);
 
 function resolverClubId() { return "ciudad-real"; }
 const CLUB_ID = resolverClubId();
-const ROLES_PERMITIDOS_RECEPCION = ["superadmin", "admin", "recepcion"];
+const ROLES_PERMITIDOS_RECEPCION = ["superadmin", "admin", "responsable_recepcion", "recepcion"];
 
 // --- Paleta "Libro de registro" (ledger de clubhouse) ---
 const PAPEL = "#F7F4EC";
@@ -343,8 +344,8 @@ function LoginRecepcion() {
       <EstiloGlobal />
       <div className="w-full max-w-sm">
         <div className="text-center mb-7">
-          <p className="text-3xl font-medium italic" style={{ color: TINTA, fontFamily: SERIF }}>Golf B</p>
-          <p className="text-sm mt-2" style={{ color: TINTA_SUAVE }}>Recepcion · Golf Ciudad Real</p>
+          <img src="/logo.png" alt="Golf B" className="h-11 mx-auto" />
+          <p className="text-sm mt-3" style={{ color: TINTA_SUAVE }}>Recepcion · Golf Ciudad Real</p>
         </div>
         <div className="rounded-2xl p-7" style={{ background: PAPEL_TARJETA, border: `1px solid ${PAPEL_LINEA}`, boxShadow: "0 2px 12px rgba(32,41,31,0.06)" }}>
           {!mostrarReset ? (
@@ -421,6 +422,10 @@ export default function App() {
   const [vista, setVista] = useState("dashboard");
   const [menuAbierto, setMenuAbierto] = useState(false);
 
+  const esSuperadmin = userRole === "superadmin" || userRole === "admin";
+  const esResponsable = userRole === "responsable_recepcion";
+  const puedeGestionEquipo = esSuperadmin || esResponsable;
+
   const NAV_GROUPS = [
     { label: "Principal", items: [
       { id: "dashboard", label: "Panel", Icon: LayoutDashboard },
@@ -428,18 +433,22 @@ export default function App() {
     { label: "Operativa", items: [
       { id: "ventas", label: "Ventas del dia", Icon: Wallet },
       { id: "checklist", label: "Checklist de tareas", Icon: ClipboardCheck },
+      { id: "turnos", label: "Turnos", Icon: Calendar },
+      { id: "necesidades", label: "Necesidades", Icon: ShoppingCart },
       { id: "incidencias", label: "Incidencias", Icon: AlertTriangle },
       { id: "fichajes", label: "Fichajes", Icon: Clock },
     ]},
-    { label: "Recursos", items: [
+    ...(puedeGestionEquipo ? [{ label: "Equipo", items: [
       { id: "equipo", label: "Equipo", Icon: Users },
+    ]}] : []),
+    ...(esSuperadmin ? [{ label: "Configuracion", items: [
       { id: "tipos_tarea", label: "Tareas del checklist", Icon: Settings },
       { id: "puntos_qr", label: "Puntos QR", Icon: MapPin },
-    ]},
+    ]}] : []),
   ];
 
   const TITULOS = {
-    dashboard: "Panel", ventas: "Ventas del dia", checklist: "Checklist de tareas",
+    dashboard: "Panel", ventas: "Ventas del dia", checklist: "Checklist de tareas", turnos: "Turnos", necesidades: "Necesidades",
     incidencias: "Incidencias", equipo: "Equipo", tipos_tarea: "Tareas del checklist", fichajes: "Fichajes", puntos_qr: "Puntos QR",
   };
 
@@ -470,8 +479,8 @@ export default function App() {
         style={{ background: PAPEL_TARJETA, borderRight: `1px solid ${PAPEL_LINEA}` }}
       >
         <div className="px-6 pt-7 pb-5">
-          <p className="text-[26px] font-medium italic" style={{ color: TINTA, fontFamily: SERIF }}>Golf B</p>
-          <p className="text-[10.5px] mt-3 uppercase tracking-[0.2em] font-semibold" style={{ color: VINO }}>Recepcion</p>
+          <img src="/logo.png" alt="Golf B" className="h-9" />
+          <p className="text-[10.5px] mt-4 uppercase tracking-[0.2em] font-semibold" style={{ color: VINO }}>Recepcion</p>
           <p className="text-xs mt-2" style={{ color: TINTA_TENUE }}>Golf Ciudad Real C.D.</p>
           <div className="mt-5 h-px" style={{ background: PAPEL_LINEA }} />
         </div>
@@ -533,13 +542,15 @@ export default function App() {
         </header>
         <div className="p-6 md:p-10 max-w-6xl mx-auto">
           {vista === "dashboard" && <Dashboard irA={setVista} />}
-          {vista === "ventas" && <VentasDia usuario={usuario} nombreOperario={nombreOperario} />}
+          {vista === "ventas" && <VentasDia usuario={usuario} nombreOperario={nombreOperario} soloHoy={!esSuperadmin && !esResponsable} />}
           {vista === "checklist" && <Checklist usuario={usuario} nombreOperario={nombreOperario} />}
+          {vista === "turnos" && <Turnos nombreOperario={nombreOperario} puedeEditar={puedeGestionEquipo} />}
+          {vista === "necesidades" && <Necesidades nombreOperario={nombreOperario} origen="Recepcion" puedeDestachar={esSuperadmin} />}
           {vista === "incidencias" && <Incidencias />}
-          {vista === "equipo" && <Equipo />}
-          {vista === "tipos_tarea" && <TiposTareaChecklist />}
+          {vista === "equipo" && puedeGestionEquipo && <Equipo />}
+          {vista === "tipos_tarea" && esSuperadmin && <TiposTareaChecklist />}
           {vista === "fichajes" && <Fichajes />}
-          {vista === "puntos_qr" && <PuntosQR />}
+          {vista === "puntos_qr" && esSuperadmin && <PuntosQR />}
         </div>
       </main>
     </div>
@@ -688,7 +699,7 @@ function Equipo() {
   );
 }
 
-function VentasDia({ usuario, nombreOperario }) {
+function VentasDia({ usuario, nombreOperario, soloHoy }) {
   const hoy = fechaISO(new Date());
   const [fecha, setFecha] = useState(hoy);
   const { datos: ventas } = useColeccion("recep_ventas_gf", "creadoEn", "desc");
@@ -738,7 +749,11 @@ function VentasDia({ usuario, nombreOperario }) {
       </Cabecera>
 
       <div className="mb-6 max-w-xs">
-        <Field label="Fecha"><input type="date" className={inputCls} style={inputStyle} value={fecha} onChange={(e) => setFecha(e.target.value)} /></Field>
+        {soloHoy ? (
+          <Field label="Fecha"><p className="text-sm py-2" style={{ color: TINTA }}>{fechaLegible(fecha)} (hoy)</p></Field>
+        ) : (
+          <Field label="Fecha"><input type="date" className={inputCls} style={inputStyle} value={fecha} onChange={(e) => setFecha(e.target.value)} /></Field>
+        )}
       </div>
 
       <Tarjeta className="p-6 mb-8 max-w-md">
@@ -1003,6 +1018,248 @@ function Fichajes() {
   );
 }
 
+const DIAS_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sabado", "Domingo"];
+const TURNOS_OPCIONES = ["Manana", "Tarde", "Partido", "Libre", "Vacaciones", "Baja"];
+
+function lunesDeSemana(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const diaSemana = date.getDay();
+  const offset = diaSemana === 0 ? -6 : 1 - diaSemana;
+  date.setDate(date.getDate() + offset);
+  return fechaISO(date);
+}
+function sumarDiasISO(iso, n) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  date.setDate(date.getDate() + n);
+  return fechaISO(date);
+}
+function idTurno(lunesISO, empleado) {
+  return `${lunesISO}_${empleado.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_")}`;
+}
+function toneTurno(t) {
+  if (t === "Manana" || t === "Tarde" || t === "Partido") return "verde";
+  if (t === "Vacaciones") return "dorado";
+  if (t === "Baja") return "rojo";
+  return "neutral";
+}
+
+function Turnos({ nombreOperario, puedeEditar }) {
+  const hoy = fechaISO(new Date());
+  const [lunesActual, setLunesActual] = useState(lunesDeSemana(hoy));
+  const dias = Array.from({ length: 7 }, (_, i) => sumarDiasISO(lunesActual, i));
+
+  const { datos: equipo } = useColeccion("recep_equipo", "nombre", "asc");
+  const { datos: turnosTodos } = useColeccion("recep_turnos", "lunes", "desc");
+  const { datos: tareasTodas } = useColeccion("recep_tareas_asignadas", "creadoEn", "desc");
+
+  const turnosSemana = turnosTodos.filter((t) => t.lunes === lunesActual);
+  const tareasSemana = tareasTodas.filter((t) => dias.includes(t.fecha));
+
+  const [editando, setEditando] = useState(null);
+  const [modalTarea, setModalTarea] = useState(false);
+  const vacioTarea = { empleado: "", tarea: "", fecha: hoy };
+  const [formTarea, setFormTarea] = useState(vacioTarea);
+
+  function turnoDe(empleado, fecha) {
+    const doc = turnosSemana.find((t) => t.empleado === empleado);
+    return doc?.turnos?.[fecha] || "-";
+  }
+  async function guardarTurno(empleado, fecha, valor) {
+    const id = idTurno(lunesActual, empleado);
+    const existente = turnosSemana.find((t) => t.empleado === empleado);
+    const nuevos = { ...(existente?.turnos || {}), [fecha]: valor };
+    await setDoc(docClub("recep_turnos", id), { lunes: lunesActual, empleado, turnos: nuevos }, { merge: true });
+    setEditando(null);
+  }
+  function abrirNuevaTarea() { setFormTarea({ ...vacioTarea, empleado: equipo[0]?.nombre || "" }); setModalTarea(true); }
+  async function guardarTarea() {
+    if (!formTarea.empleado || !formTarea.tarea.trim()) { alert("Elige un empleado y escribe la tarea."); return; }
+    await crearDoc("recep_tareas_asignadas", { ...formTarea, asignadoPor: nombreOperario || "" });
+    setModalTarea(false);
+  }
+  async function borrarTarea(id) {
+    if (!confirm("Eliminar esta tarea asignada?")) return;
+    await borrarDoc("recep_tareas_asignadas", id);
+  }
+
+  return (
+    <div>
+      <Cabecera titulo="Turnos" subtitulo="Planificacion semanal de turnos y tareas asignadas.">
+        {puedeEditar && <BotonPrimario onClick={abrirNuevaTarea}>Asignar tarea</BotonPrimario>}
+      </Cabecera>
+
+      <div className="flex items-center justify-between mb-6 max-w-xl">
+        <button onClick={() => setLunesActual(sumarDiasISO(lunesActual, -7))} className="p-2 rounded-lg border transition" style={{ borderColor: PAPEL_LINEA, color: TINTA_SUAVE }}>
+          <ChevronLeft size={16} />
+        </button>
+        <p className="text-sm font-medium" style={{ color: TINTA }}>
+          Semana del {fechaLegible(lunesActual)} al {fechaLegible(sumarDiasISO(lunesActual, 6))}
+        </p>
+        <button onClick={() => setLunesActual(sumarDiasISO(lunesActual, 7))} className="p-2 rounded-lg border transition" style={{ borderColor: PAPEL_LINEA, color: TINTA_SUAVE }}>
+          <ChevronRight size={16} />
+        </button>
+      </div>
+
+      {equipo.length === 0 && <p className="text-sm mb-6" style={{ color: TINTA_TENUE }}>Anade primero miembros del equipo en "Equipo".</p>}
+
+      {equipo.length > 0 && (
+        <div className="overflow-x-auto mb-10">
+          <table className="w-full border-collapse min-w-[760px]">
+            <thead>
+              <tr>
+                <th className="text-left text-xs font-semibold uppercase tracking-wide pb-3 pr-4" style={{ color: TINTA_TENUE }}>Empleado</th>
+                {dias.map((f, i) => (
+                  <th key={f} className="text-center text-xs font-semibold uppercase tracking-wide pb-3 px-2" style={{ color: f === hoy ? VINO : TINTA_TENUE }}>
+                    {DIAS_SEMANA[i]}<br /><span className="num font-normal">{fechaLegible(f)}</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {equipo.map((m) => (
+                <tr key={m.id} style={{ borderTop: `1px solid ${PAPEL_LINEA}` }}>
+                  <td className="py-3 pr-4 font-medium text-sm" style={{ color: TINTA }}>{m.nombre}</td>
+                  {dias.map((f) => {
+                    const valor = turnoDe(m.nombre, f);
+                    const estaEditando = editando && editando.empleado === m.nombre && editando.fecha === f;
+                    return (
+                      <td key={f} className="py-2 px-2 text-center">
+                        {puedeEditar ? (
+                          estaEditando ? (
+                            <select
+                              autoFocus
+                              className="text-xs rounded-md border px-1.5 py-1"
+                              style={{ borderColor: PAPEL_LINEA, color: TINTA }}
+                              value={valor === "-" ? "" : valor}
+                              onChange={(e) => guardarTurno(m.nombre, f, e.target.value)}
+                              onBlur={() => setEditando(null)}
+                            >
+                              <option value="">-</option>
+                              {TURNOS_OPCIONES.map((o) => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                          ) : (
+                            <button onClick={() => setEditando({ empleado: m.nombre, fecha: f })}>
+                              <Badge tone={toneTurno(valor)}>{valor}</Badge>
+                            </button>
+                          )
+                        ) : (
+                          <Badge tone={toneTurno(valor)}>{valor}</Badge>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="text-sm font-medium mb-3" style={{ color: TINTA }}>Tareas asignadas esta semana</p>
+      <div className="space-y-2 max-w-xl">
+        {tareasSemana.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Sin tareas asignadas esta semana.</p>}
+        {tareasSemana.map((t) => (
+          <Tarjeta key={t.id} className="p-4 flex items-center justify-between">
+            <div>
+              <p className="font-medium text-sm" style={{ color: TINTA }}>{t.tarea}</p>
+              <p className="text-xs mt-0.5" style={{ color: TINTA_SUAVE }}>{t.empleado} · {fechaLegible(t.fecha)}</p>
+            </div>
+            {puedeEditar && (
+              <button onClick={() => borrarTarea(t.id)} className="p-1 rounded transition" style={{ color: TINTA_TENUE }}><Trash2 size={14} /></button>
+            )}
+          </Tarjeta>
+        ))}
+      </div>
+
+      <Modal open={modalTarea} onClose={() => setModalTarea(false)} title="Asignar tarea">
+        <Field label="Empleado">
+          <select className={inputCls} style={inputStyle} value={formTarea.empleado} onChange={(e) => setFormTarea({ ...formTarea, empleado: e.target.value })}>
+            {equipo.map((m) => <option key={m.id} value={m.nombre}>{m.nombre}</option>)}
+          </select>
+        </Field>
+        <Field label="Tarea"><input className={inputCls} style={inputStyle} value={formTarea.tarea} onChange={(e) => setFormTarea({ ...formTarea, tarea: e.target.value })} placeholder="p.ej. Repasar carro de golf 3" /></Field>
+        <Field label="Fecha"><input type="date" className={inputCls} style={inputStyle} value={formTarea.fecha} onChange={(e) => setFormTarea({ ...formTarea, fecha: e.target.value })} /></Field>
+        <div className="mt-4"><BotonPrimario onClick={guardarTarea} icon={null}>Guardar</BotonPrimario></div>
+      </Modal>
+    </div>
+  );
+}
+
+function Necesidades({ nombreOperario, origen, puedeDestachar }) {
+  const { datos: necesidades } = useColeccion("necesidades", "creadoEn", "desc");
+  const [modalNueva, setModalNueva] = useState(false);
+  const [texto, setTexto] = useState("");
+
+  const pendientes = necesidades.filter((n) => !n.completada);
+  const completadas = necesidades.filter((n) => n.completada);
+
+  async function crearNecesidad() {
+    if (!texto.trim()) { alert("Escribe la necesidad."); return; }
+    await crearDoc("necesidades", { texto: texto.trim(), creadoPor: nombreOperario || "", origen });
+    setTexto("");
+    setModalNueva(false);
+  }
+  async function marcarCompletada(n) {
+    await actualizarDoc("necesidades", n.id, { completada: true, completadaPor: nombreOperario || "", completadaEn: serverTimestamp() });
+  }
+  async function destacharNecesidad(n) {
+    if (!confirm("Quitar el tachado de esta necesidad?")) return;
+    await actualizarDoc("necesidades", n.id, { completada: false, completadaPor: null, completadaEn: null });
+  }
+
+  return (
+    <div>
+      <Cabecera titulo="Necesidades" subtitulo="Peticiones compartidas entre Recepcion, Mantenimiento y Direccion.">
+        <BotonPrimario onClick={() => { setTexto(""); setModalNueva(true); }}>Nueva necesidad</BotonPrimario>
+      </Cabecera>
+
+      <div className="space-y-2 max-w-2xl mb-8">
+        {pendientes.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>No hay necesidades pendientes.</p>}
+        {pendientes.map((n) => (
+          <Tarjeta key={n.id} className="p-4 flex items-start gap-3">
+            <button onClick={() => marcarCompletada(n)} className="mt-0.5 w-5 h-5 rounded border flex-shrink-0" style={{ borderColor: VINO }} aria-label="Marcar como cubierta" />
+            <div>
+              <p className="text-sm font-medium" style={{ color: TINTA }}>{n.texto}</p>
+              <p className="text-xs mt-0.5" style={{ color: TINTA_SUAVE }}>Pedido por {n.creadoPor || "?"} · {n.origen}</p>
+            </div>
+          </Tarjeta>
+        ))}
+      </div>
+
+      {completadas.length > 0 && (
+        <>
+          <p className="text-sm font-medium mb-3" style={{ color: TINTA }}>Cubiertas</p>
+          <div className="space-y-2 max-w-2xl">
+            {completadas.map((n) => (
+              <Tarjeta key={n.id} className="p-4 flex items-start gap-3" style={{ opacity: 0.65 }}>
+                <div className="mt-0.5 w-5 h-5 rounded flex items-center justify-center flex-shrink-0" style={{ background: VINO }}>
+                  <Check size={13} color={PAPEL} />
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium line-through" style={{ color: TINTA_SUAVE }}>{n.texto}</p>
+                  <p className="text-xs mt-0.5" style={{ color: TINTA_TENUE }}>Pedido por {n.creadoPor || "?"} · {n.origen} — Cubierto por {n.completadaPor || "?"}</p>
+                </div>
+                {puedeDestachar && (
+                  <button onClick={() => destacharNecesidad(n)} className="text-xs underline flex-shrink-0" style={{ color: TINTA_TENUE }}>Destachar</button>
+                )}
+              </Tarjeta>
+            ))}
+          </div>
+        </>
+      )}
+
+      <Modal open={modalNueva} onClose={() => setModalNueva(false)} title="Nueva necesidad">
+        <Field label="Que se necesita">
+          <input className={inputCls} style={inputStyle} value={texto} onChange={(e) => setTexto(e.target.value)} placeholder="p.ej. Comprar bolsas de basura" autoFocus />
+        </Field>
+        <div className="mt-4"><BotonPrimario onClick={crearNecesidad}>Guardar</BotonPrimario></div>
+      </Modal>
+    </div>
+  );
+}
+
 function PuntosQR() {
   const { datos: puntos } = useColeccion("recep_puntos_qr", "nombre", "asc");
   const [modal, setModal] = useState(false);
@@ -1082,14 +1339,36 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
 
   const punto = puntos.find((p) => p.id === codigo);
 
-  useEffect(() => {
+  // Pide la ubicacion. Primero con precision normal (rapida, funciona dentro de
+  // edificios) y, si falla por tiempo o posicion no disponible, lo reintenta con
+  // GPS de alta precision. Los errores se explican segun su causa real.
+  function pedirUbicacion() {
+    setUbicacion(null);
+    setErrorUbicacion("");
     if (!navigator.geolocation) { setErrorUbicacion("Este dispositivo no soporta geolocalizacion."); return; }
+    if (window.isSecureContext === false) { setErrorUbicacion("La ubicacion solo funciona en una conexion segura (https)."); return; }
+    const ok = (pos) => setUbicacion({ lat: pos.coords.latitude, lng: pos.coords.longitude, precision: pos.coords.accuracy });
+    const mensaje = (err) => {
+      if (err?.code === 1) return "Permiso de ubicacion denegado. Activalo en los ajustes del navegador para este sitio (en iPhone: Ajustes > Privacidad > Localizacion > Safari) y pulsa reintentar.";
+      if (err?.code === 2) return "No se pudo determinar tu posicion. Activa el GPS del movil y sal al aire libre o junto a una ventana.";
+      if (err?.code === 3) return "La ubicacion tarda demasiado. Activa el GPS, sal al aire libre o junto a una ventana y pulsa reintentar.";
+      return "No se pudo obtener tu ubicacion. Activa el GPS y los permisos de ubicacion del navegador.";
+    };
     navigator.geolocation.getCurrentPosition(
-      (pos) => setUbicacion({ lat: pos.coords.latitude, lng: pos.coords.longitude, precision: pos.coords.accuracy }),
-      () => setErrorUbicacion("No se pudo obtener tu ubicacion. Activa el GPS y los permisos de ubicacion del navegador."),
-      { enableHighAccuracy: true, timeout: 15000 }
+      ok,
+      (err1) => {
+        if (err1?.code === 1) { setErrorUbicacion(mensaje(err1)); return; }
+        navigator.geolocation.getCurrentPosition(
+          ok,
+          (err2) => setErrorUbicacion(mensaje(err2)),
+          { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }
+        );
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
     );
-  }, []);
+  }
+
+  useEffect(() => { pedirUbicacion(); }, []);
 
   function distanciaMetros(lat1, lng1, lat2, lng2) {
     const R = 6371000;
@@ -1104,7 +1383,15 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
   const tipo = misFichajes.length === 0 || misFichajes[0].tipo === "salida" ? "entrada" : "salida";
 
   const distancia = punto && ubicacion ? distanciaMetros(ubicacion.lat, ubicacion.lng, punto.lat, punto.lng) : null;
-  const dentroDeRango = distancia != null && distancia <= (punto?.radioMetros || 50);
+  // El GPS del movil tiene un margen de error (precision/accuracy). Si ese
+  // margen es grande, restamos parte de esa tolerancia a la distancia antes
+  // de comparar con el radio permitido, hasta un tope de 30m para no anular
+  // por completo el sentido del geofence.
+  const tolerancia = ubicacion ? Math.min(30, ubicacion.precision || 0) : 0;
+  const distanciaAjustada = distancia != null ? Math.max(0, distancia - tolerancia) : null;
+  const dentroDeRango = distanciaAjustada != null && distanciaAjustada <= (punto?.radioMetros || 50);
+
+  function reintentarUbicacion() { pedirUbicacion(); }
 
   async function confirmar() {
     if (!dentroDeRango) { alert("Debes estar mas cerca del punto de fichaje."); return; }
@@ -1155,11 +1442,25 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
             <p className="text-xs uppercase tracking-wide mb-1" style={{ color: VINO }}>{punto.nombre}</p>
             <p className="font-medium text-lg mb-4" style={{ color: TINTA, fontFamily: SERIF }}>Fichar {tipo}</p>
             {!ubicacion && !errorUbicacion && <p className="text-sm mb-4" style={{ color: TINTA_SUAVE }}>Obteniendo tu ubicacion...</p>}
-            {errorUbicacion && <p className="text-sm mb-4" style={{ color: LADRILLO }}>{errorUbicacion}</p>}
+            {errorUbicacion && (
+              <>
+                <p className="text-sm mb-3" style={{ color: LADRILLO }}>{errorUbicacion}</p>
+                <button onClick={reintentarUbicacion} className="text-xs underline mb-4" style={{ color: VINO }}>Reintentar ubicacion</button>
+              </>
+            )}
             {ubicacion && distancia != null && (
-              <p className="text-sm mb-4" style={{ color: dentroDeRango ? SALVIA : LADRILLO }}>
-                {dentroDeRango ? `Estas dentro del punto (${Math.round(distancia)} m).` : `Estas a ${Math.round(distancia)} m del punto. Debes estar a menos de ${punto.radioMetros} m para fichar.`}
-              </p>
+              <>
+                <p className="text-sm mb-2" style={{ color: dentroDeRango ? SALVIA : LADRILLO }}>
+                  {dentroDeRango ? `Estas dentro del punto (${Math.round(distancia)} m).` : `Estas a ${Math.round(distancia)} m del punto. Debes estar a menos de ${punto.radioMetros} m para fichar.`}
+                </p>
+                <p className="text-xs mb-4" style={{ color: TINTA_TENUE }}>
+                  Precision del GPS: ±{Math.round(ubicacion.precision)} m.
+                  {!dentroDeRango && " Si estas junto al punto, prueba a salir al aire libre o pulsa reintentar."}
+                </p>
+                {!dentroDeRango && (
+                  <button onClick={reintentarUbicacion} className="text-xs underline mb-4" style={{ color: VINO }}>Reintentar ubicacion</button>
+                )}
+              </>
             )}
             <BotonPrimario onClick={confirmar} icon={null} disabled={!dentroDeRango || guardando}>
               {guardando ? "Registrando..." : `Confirmar ${tipo}`}

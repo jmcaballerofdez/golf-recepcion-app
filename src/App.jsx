@@ -1116,12 +1116,6 @@ function etiquetaRango(modo, r) {
 
 function InformeFichajes({ equipo, fichajes }) {
   const hoyISO = fechaISO(new Date());
-  // Agrupa los nombres que solo se diferencian en mayusculas, tildes o espacios (p. ej. "Cristina Perez" y "Cristina Pérez")
-  const norm = (n) => String(n || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
-  const mapaP = {};
-  equipo.forEach((m) => { if (!m.nombre) return; const k = norm(m.nombre); (mapaP[k] = mapaP[k] || { key: k, nombre: m.nombre, set: new Set() }).set.add(m.nombre); });
-  fichajes.forEach((f) => { if (!f.empleado) return; const k = norm(f.empleado); (mapaP[k] = mapaP[k] || { key: k, nombre: f.empleado, set: new Set() }).set.add(f.empleado); });
-  const personas = Object.values(mapaP).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const [empleado, setEmpleado] = useState("__todos");
   const [extras, setExtras] = useState([]); // otros nombres que el admin marca como de la misma persona
   const [modo, setModo] = useState("mes");
@@ -1133,6 +1127,14 @@ function InformeFichajes({ equipo, fichajes }) {
   const { datos: ventasTodas } = useColeccion("recep_ventas_gf", "creadoEn", "desc");
   const { datos: incidTodas } = useColeccion("recep_incidencias", "creadoEn", "desc");
   const { datos: checkTodos } = useColeccion("recep_checklist_diario", "fecha", "desc");
+  // Agrupa los nombres que solo se diferencian en mayusculas, tildes o espacios (p. ej. "Cristina Perez" y "Cristina Pérez")
+  const norm = (n) => String(n || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+  const mapaP = {};
+  equipo.forEach((m) => { if (!m.nombre) return; const k = norm(m.nombre); (mapaP[k] = mapaP[k] || { key: k, nombre: m.nombre, set: new Set() }).set.add(m.nombre); });
+  fichajes.forEach((f) => { if (!f.empleado) return; const k = norm(f.empleado); (mapaP[k] = mapaP[k] || { key: k, nombre: f.empleado, set: new Set() }).set.add(f.empleado); });
+  [...turnosTodos.map((t) => t.empleado), ...tareasTodas.map((t) => t.empleado), ...ventasTodas.map((v) => v.registradoPor), ...incidTodas.map((x) => x.reportadoPor), ...checkTodos.map((c) => c.actualizadoPor)]
+    .filter((n) => n && !String(n).includes("@")).forEach((n) => { const k = norm(n); (mapaP[k] = mapaP[k] || { key: k, nombre: n, set: new Set() }).set.add(n); });
+  const personas = Object.values(mapaP).sort((a, b) => a.nombre.localeCompare(b.nombre, "es"));
   const r = rangoInforme(modo, ancla, desdeC, hastaC);
   const enRango = (f) => { const k = fechaISO(f.momento); return k >= r.desde && k <= r.hasta; };
   const todos = empleado === "__todos";

@@ -4,7 +4,7 @@ import {
   getFirestore, collection, doc, getDoc, setDoc, addDoc, deleteDoc, updateDoc,
   onSnapshot, serverTimestamp, query, orderBy,
 } from "firebase/firestore";
-import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "firebase/auth";
 import {
   LayoutDashboard, Users, AlertTriangle, ClipboardCheck, Wallet,
   Plus, Pencil, Trash2, X, Menu, LogOut, Check, Loader2, Shield, Lock,
@@ -417,10 +417,59 @@ function ModuloDesactivadoRecepcion({ email }) {
   );
 }
 
+// Cada usuario cambia o recupera SU contrasena; nadie mas la ve ni la gestiona
+function MiCuenta({ usuario, onClose }) {
+  const [actual, setActual] = useState("");
+  const [nueva, setNueva] = useState("");
+  const [repetir, setRepetir] = useState("");
+  const [msg, setMsg] = useState(null); // { ok, texto }
+  const [trabajando, setTrabajando] = useState(false);
+
+  async function cambiar() {
+    setMsg(null);
+    if (!actual) { setMsg({ ok: false, texto: "Escribe tu contrasena actual." }); return; }
+    if (nueva.length < 8) { setMsg({ ok: false, texto: "La nueva contrasena debe tener al menos 8 caracteres." }); return; }
+    if (nueva !== repetir) { setMsg({ ok: false, texto: "Las dos contrasenas nuevas no coinciden." }); return; }
+    if (nueva === actual) { setMsg({ ok: false, texto: "La nueva contrasena debe ser distinta de la actual." }); return; }
+    setTrabajando(true);
+    try {
+      await reauthenticateWithCredential(auth.currentUser, EmailAuthProvider.credential(usuario.email, actual));
+      await updatePassword(auth.currentUser, nueva);
+      setActual(""); setNueva(""); setRepetir("");
+      setMsg({ ok: true, texto: "Contrasena cambiada. Usala la proxima vez que entres." });
+    } catch (e) {
+      const c = e?.code || "";
+      setMsg({ ok: false, texto: (c.includes("wrong-password") || c.includes("invalid-credential")) ? "La contrasena actual no es correcta." : c.includes("weak-password") ? "La nueva contrasena es demasiado debil." : c.includes("too-many") ? "Demasiados intentos. Espera unos minutos." : "No se pudo cambiar la contrasena. Vuelve a intentarlo." });
+    }
+    setTrabajando(false);
+  }
+  async function enviarEnlace() {
+    setMsg(null); setTrabajando(true);
+    try { await sendPasswordResetEmail(auth, usuario.email); setMsg({ ok: true, texto: "Te hemos enviado un enlace a " + usuario.email + ". Si no lo ves, mira en spam." }); }
+    catch { setMsg({ ok: false, texto: "No se pudo enviar el email. Vuelve a intentarlo." }); }
+    setTrabajando(false);
+  }
+  return (
+    <Modal open={true} onClose={onClose} title="Mi cuenta">
+      <p className="text-sm mb-4" style={{ color: TINTA_SUAVE }}>{usuario.email}</p>
+      <p className="text-sm font-medium mb-2" style={{ color: TINTA }}>Cambiar mi contrasena</p>
+      <Field label="Contrasena actual"><input type="password" autoComplete="current-password" className={inputCls} style={inputStyle} value={actual} onChange={(e) => setActual(e.target.value)} /></Field>
+      <Field label="Contrasena nueva (minimo 8 caracteres)"><input type="password" autoComplete="new-password" className={inputCls} style={inputStyle} value={nueva} onChange={(e) => setNueva(e.target.value)} /></Field>
+      <Field label="Repite la contrasena nueva"><input type="password" autoComplete="new-password" className={inputCls} style={inputStyle} value={repetir} onChange={(e) => setRepetir(e.target.value)} /></Field>
+      {msg && <p className="text-sm rounded-lg px-3 py-2 mb-3" style={msg.ok ? { color: SALVIA, background: SALVIA_SUAVE } : { color: LADRILLO, background: LADRILLO_SUAVE }}>{msg.texto}</p>}
+      <div className="flex items-center justify-between flex-wrap gap-2 mt-2">
+        <button onClick={enviarEnlace} disabled={trabajando} className="text-sm underline" style={{ color: VINO }}>He olvidado la actual: enviarme un enlace por email</button>
+        <BotonPrimario onClick={cambiar} icon={null}>{trabajando ? "Guardando..." : "Cambiar contrasena"}</BotonPrimario>
+      </div>
+    </Modal>
+  );
+}
+
 export default function App() {
   const { currentUser: usuario, userRole, modulosActivos, nombreOperario, cargandoAuth } = useAuthRecepcion();
   const [vista, setVista] = useState("dashboard");
   const [menuAbierto, setMenuAbierto] = useState(false);
+  const [miCuentaAbierta, setMiCuentaAbierta] = useState(false);
 
   const esSuperadmin = userRole === "superadmin" || userRole === "admin";
   const esResponsable = userRole === "responsable_recepcion";
@@ -517,13 +566,22 @@ export default function App() {
         </div>
         <div className="px-4 pb-2 flex items-center justify-between">
           <span className="text-[11px] truncate" style={{ color: TINTA_TENUE }}>{usuario.email}</span>
-          <button
-            onClick={() => signOut(auth)}
-            className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-1.5 rounded-lg transition-colors flex-shrink-0"
-            style={{ color: TINTA_SUAVE }}
-          >
-            <LogOut size={13} /> Salir
-          </button>
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button
+              onClick={() => setMiCuentaAbierta(true)}
+              className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-1.5 rounded-lg transition-colors"
+              style={{ color: TINTA_SUAVE }}
+            >
+              <Lock size={13} /> Mi cuenta
+            </button>
+            <button
+              onClick={() => signOut(auth)}
+              className="flex items-center gap-1 text-[11px] font-medium px-2.5 py-1.5 rounded-lg transition-colors"
+              style={{ color: TINTA_SUAVE }}
+            >
+              <LogOut size={13} /> Salir
+            </button>
+          </div>
         </div>
         <div className="px-6 py-4 text-[11px] leading-relaxed" style={{ borderTop: `1px solid ${PAPEL_LINEA}`, color: TINTA_TENUE }}>
           Golf Ciudad Real C.D.
@@ -531,6 +589,7 @@ export default function App() {
         </div>
       </aside>
 
+      {miCuentaAbierta && <MiCuenta usuario={usuario} onClose={() => setMiCuentaAbierta(false)} />}
       {menuAbierto && (
         <div className="fixed inset-0 bg-black/20 z-30 md:hidden" onClick={() => setMenuAbierto(false)} />
       )}

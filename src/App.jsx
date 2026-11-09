@@ -1384,7 +1384,8 @@ function tramosDeFichajes(lista) {
     });
     if (abierta) tramos.push({ ent: abierta, sal: null });
     const ms = tramos.reduce((t, x) => (x.ent && x.sal) ? t + (x.sal.momento.toMillis() - x.ent.momento.toMillis()) : t, 0);
-    return { fecha, tramos, ms, incompleto: tramos.some((x) => !x.ent || !x.sal) };
+    const pausaMs = tramos.reduce((t, x, i) => (x.sal?.motivo === "comida" && tramos[i + 1]?.ent) ? t + (tramos[i + 1].ent.momento.toMillis() - x.sal.momento.toMillis()) : t, 0);
+    return { fecha, tramos, ms, pausaMs, incompleto: tramos.some((x) => !x.ent || !x.sal) };
   });
 }
 function hhmm(ms) { const m = Math.round(ms / 60000); return Math.floor(m / 60) + "h " + String(m % 60).padStart(2, "0") + "min"; }
@@ -1475,8 +1476,8 @@ function InformeFichajes({ equipo, fichajes }) {
   function descargarBruto() {
     const sel = fichajes.filter((f) => todos || selSet.has(f.empleado))
       .sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
-    const filas = [["Fecha", "Hora", "Empleado", "Tipo", "Punto", "Origen", "Distancia al punto (m)", "Precision GPS (m)", "Latitud", "Longitud"]];
-    sel.forEach((f) => filas.push([fechaLegible(fechaISO(f.momento)), horaCorta(f.momento), f.empleado || "", f.tipo || "", f.puntoNombre || "", f.origen || "", f.distanciaM ?? "", f.precisionM ?? "", f.lat ?? "", f.lng ?? ""]));
+    const filas = [["Fecha", "Hora", "Empleado", "Tipo", "Punto", "Origen", "Distancia al punto (m)", "Precision GPS (m)", "Latitud", "Longitud", "Motivo"]];
+    sel.forEach((f) => filas.push([fechaLegible(fechaISO(f.momento)), horaCorta(f.momento), f.empleado || "", f.tipo || "", f.puntoNombre || "", f.origen || "", f.distanciaM ?? "", f.precisionM ?? "", f.lat ?? "", f.lng ?? "", f.motivo === "comida" ? "Pausa comida" : f.motivo === "vuelta_comida" ? "Vuelta de comida" : ""]));
     bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_registro_completo_" + (todos ? "todos" : selNombre.replace(/\s+/g, "_")) + ".csv");
   }
   // Todo lo que consta de un empleado: fichajes, turnos, tareas, ventas, incidencias y checklist
@@ -1507,12 +1508,12 @@ function InformeFichajes({ equipo, fichajes }) {
       filas.push(["Empleado", "Periodo", "Dias fichados", "Horas trabajadas", "Media por dia", "Dias incompletos", "Horas acumuladas en el ano"]);
       resumen.forEach((x) => filas.push([x.nombre, etiquetaRango(modo, r), x.dias.length, hhmm(x.ms), x.dias.length ? hhmm(x.ms / x.dias.length) : "", x.incompletos, hhmm(x.anioMs)]));
     } else {
-      filas.push(["Empleado", "Fecha", "Entrada", "Salida", "Punto", "Duracion tramo", "Total del dia"]);
+      filas.push(["Empleado", "Fecha", "Entrada", "Salida", "Punto", "Duracion tramo", "Total del dia", "Pausa comida (no cuenta)"]);
       detalle.dias.forEach((d) => d.tramos.forEach((t, i) => filas.push([
         detalle.nombre, fechaLegible(d.fecha), txt(t.ent), txt(t.sal), (t.ent || t.sal)?.puntoNombre || "",
-        (t.ent && t.sal) ? hhmm(t.sal.momento.toMillis() - t.ent.momento.toMillis()) : "incompleto", i === 0 ? hhmm(d.ms) : "",
+        (t.ent && t.sal) ? hhmm(t.sal.momento.toMillis() - t.ent.momento.toMillis()) : "incompleto", i === 0 ? hhmm(d.ms) : "", i === 0 && d.pausaMs > 0 ? hhmm(d.pausaMs) : "",
       ])));
-      filas.push([]); filas.push(["TOTAL", etiquetaRango(modo, r), "", "", "", "", hhmm(totalMs)]);
+      filas.push([]); filas.push(["TOTAL", etiquetaRango(modo, r), "", "", "", "", hhmm(totalMs), ""]);
     }
     bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_" + (todos ? "todos" : selNombre.replace(/\s+/g, "_")) + "_" + modo + "_" + r.desde + ".csv");
   }
@@ -1607,7 +1608,7 @@ function InformeFichajes({ equipo, fichajes }) {
             <Tarjeta key={d.fecha} className="p-3 flex items-center justify-between gap-3 flex-wrap">
               <div>
                 <p className="font-medium text-sm" style={{ color: TINTA }}>{fechaLegible(d.fecha)}</p>
-                <p className="text-xs num" style={{ color: TINTA_SUAVE }}>{d.tramos.map((t) => txt(t.ent) + " - " + txt(t.sal)).join("   ·   ")}</p>
+                <p className="text-xs num" style={{ color: TINTA_SUAVE }}>{d.tramos.map((t) => txt(t.ent) + " - " + txt(t.sal)).join("   ·   ")}{d.pausaMs > 0 ? "   ·   pausa comida " + hhmm(d.pausaMs) : ""}</p>
               </div>
               <div className="flex items-center gap-2">
                 {d.incompleto && <Badge tone="rojo">Falta entrada o salida</Badge>}
@@ -1635,10 +1636,11 @@ function Fichajes({ puedeInforme }) {
         {equipo.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Anade primero miembros del equipo.</p>}
         {equipo.map((m) => {
           const estado = ultimoEstadoFichaje(fichajes, m.nombre);
+          const enComida = estado === "fuera" && fichajes.find((f) => f.empleado === m.nombre)?.motivo === "comida";
           return (
             <Tarjeta key={m.id} className="p-4 flex items-center justify-between">
               <span className="font-medium" style={{ color: TINTA }}>{m.nombre}</span>
-              <Badge tone={estado === "dentro" ? "verde" : "neutral"}>{estado === "dentro" ? "Dentro" : "Fuera"}</Badge>
+              <Badge tone={estado === "dentro" ? "verde" : enComida ? "ambar" : "neutral"}>{estado === "dentro" ? "Dentro" : enComida ? "En comida" : "Fuera"}</Badge>
             </Tarjeta>
           );
         })}
@@ -1652,7 +1654,7 @@ function Fichajes({ puedeInforme }) {
               <p className="font-medium" style={{ color: TINTA }}>{f.empleado}</p>
               <p className="text-xs" style={{ color: TINTA_SUAVE }}>{f.puntoNombre ? `${f.puntoNombre} - ` : ""}{horaCorta(f.momento)}</p>
             </div>
-            <Badge tone={f.tipo === "entrada" ? "verde" : "neutral"}>{f.tipo}</Badge>
+            <Badge tone={f.tipo === "entrada" ? "verde" : f.motivo === "comida" ? "ambar" : "neutral"}>{f.motivo === "comida" ? "salida a comer" : f.motivo === "vuelta_comida" ? "vuelta de comida" : f.tipo}</Badge>
           </Tarjeta>
         ))}
       </div>
@@ -2037,13 +2039,15 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
 
   function reintentarUbicacion() { pedirUbicacion(); }
 
-  async function confirmar() {
+  const vuelveDeComer = tipo === "entrada" && misFichajes[0]?.motivo === "comida";
+  async function confirmar(salidaComida) {
     if (!dentroDeRango) { alert("Debes estar mas cerca del punto de fichaje."); return; }
     setGuardando(true);
     try {
       await crearDoc("recep_fichajes", {
         empleado: nombreOperario,
         tipo,
+        ...(salidaComida === true ? { motivo: "comida" } : vuelveDeComer ? { motivo: "vuelta_comida" } : {}),
         momento: serverTimestamp(),
         origen: "qr",
         puntoId: punto.id,
@@ -2053,7 +2057,7 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
         precisionM: ubicacion.precision,
         distanciaM: Math.round(distancia),
       });
-      setHecho(tipo);
+      setHecho(salidaComida === true ? "comida" : tipo);
     } catch (err) {
       alert("No se pudo registrar el fichaje. Intentalo de nuevo.");
     } finally {
@@ -2076,7 +2080,7 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
         )}
         {punto && hecho && (
           <>
-            <p className="font-medium text-lg mb-2" style={{ color: TINTA, fontFamily: SERIF }}>{hecho === "entrada" ? "Entrada registrada" : "Salida registrada"}</p>
+            <p className="font-medium text-lg mb-2" style={{ color: TINTA, fontFamily: SERIF }}>{hecho === "entrada" ? (vuelveDeComer ? "Vuelta de comida registrada" : "Entrada registrada") : hecho === "comida" ? "Salida a comer registrada" : "Salida registrada"}</p>
             <p className="text-sm mb-4" style={{ color: TINTA_SUAVE }}>{punto.nombre} - {nombreOperario}</p>
             <BotonPrimario onClick={volver} icon={null}>Ir al menu de la app</BotonPrimario>
           </>
@@ -2106,9 +2110,14 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
                 )}
               </>
             )}
-            <BotonPrimario onClick={confirmar} icon={null} disabled={!dentroDeRango || guardando}>
-              {guardando ? "Registrando..." : `Confirmar ${tipo}`}
+            <BotonPrimario onClick={() => confirmar(false)} icon={null} disabled={!dentroDeRango || guardando}>
+              {guardando ? "Registrando..." : vuelveDeComer ? "Confirmar vuelta de comida" : tipo === "salida" ? "Confirmar salida (fin de jornada)" : "Confirmar entrada"}
             </BotonPrimario>
+            {tipo === "salida" && (
+              <button onClick={() => confirmar(true)} disabled={!dentroDeRango || guardando} className="block w-full mt-3 rounded-lg px-4 py-2.5 text-sm font-medium border" style={{ borderColor: VINO, color: VINO, opacity: (!dentroDeRango || guardando) ? 0.5 : 1 }}>
+                Salgo a comer (pausa comida)
+              </button>
+            )}
             <button onClick={volver} className="block mx-auto mt-4 text-sm underline" style={{ color: VINO }}>Ir al menu de la app</button>
           </>
         )}

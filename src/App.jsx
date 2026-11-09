@@ -601,8 +601,8 @@ export default function App() {
           <p className="font-medium italic" style={{ color: TINTA, fontFamily: SERIF }}>Golf B · {TITULOS[vista]}</p>
         </header>
         <div className="p-6 md:p-10 max-w-6xl mx-auto">
-          {vista === "dashboard" && <Dashboard irA={setVista} />}
-          {vista === "ventas" && <VentasDia usuario={usuario} nombreOperario={nombreOperario} soloHoy={!esSuperadmin && !esResponsable} />}
+          {vista === "dashboard" && <Dashboard irA={setVista} verTotales={puedeGestionEquipo} />}
+          {vista === "ventas" && <VentasDia usuario={usuario} nombreOperario={nombreOperario} soloHoy={!puedeGestionEquipo} verTotales={puedeGestionEquipo} />}
           {vista === "checklist" && <Checklist usuario={usuario} nombreOperario={nombreOperario} />}
           {vista === "turnos" && <Turnos nombreOperario={nombreOperario} puedeEditar={puedeGestionEquipo} />}
           {vista === "necesidades" && <Necesidades nombreOperario={nombreOperario} origen="Recepcion" puedeDestachar={esSuperadmin} />}
@@ -629,7 +629,7 @@ function FilaLedger({ etiqueta, valor, destacado }) {
   );
 }
 
-function Dashboard({ irA }) {
+function Dashboard({ irA, verTotales }) {
   const hoy = fechaISO(new Date());
   const { datos: ventas } = useColeccion("recep_ventas_gf", "creadoEn", "desc");
   const { datos: proshopDias } = useColeccion("recep_ventas_proshop", "fecha", "desc");
@@ -654,8 +654,8 @@ function Dashboard({ irA }) {
     <div>
       <Cabecera titulo="Panel de recepcion" subtitulo={`Registro del ${fechaLegible(hoy)}`} />
 
-      <div className="grid lg:grid-cols-[1.3fr_1fr] gap-6 mb-8">
-        <Tarjeta className="p-6" onClick={() => irA("ventas")}>
+      <div className={"grid gap-6 mb-8 " + (verTotales ? "lg:grid-cols-[1.3fr_1fr]" : "lg:grid-cols-1")}>
+        {verTotales && <Tarjeta className="p-6" onClick={() => irA("ventas")}>
           <p className="text-[11px] uppercase tracking-[0.15em] font-semibold mb-1" style={{ color: TINTA_TENUE }}>Libro de ventas · hoy</p>
           <div className="mt-3" style={{ borderTop: `1px solid ${PAPEL_LINEA}` }}>
             <FilaLedger etiqueta="Green fees · socios" valor={`${totalSocios.toFixed(2)} EUR`} />
@@ -666,7 +666,7 @@ function Dashboard({ irA }) {
             <div style={{ borderTop: `2px solid ${TINTA}` }} />
             <FilaLedger etiqueta="Total del dia" valor={`${totalGeneral.toFixed(2)} EUR`} destacado />
           </div>
-        </Tarjeta>
+        </Tarjeta>}
 
         <div className="grid grid-cols-2 gap-4 content-start">
           <Tarjeta className="p-5" onClick={() => irA("checklist")}>
@@ -790,7 +790,7 @@ function Equipo() {
   );
 }
 
-function VentasDia({ usuario, nombreOperario, soloHoy }) {
+function VentasDia({ usuario, nombreOperario, soloHoy, verTotales }) {
   const hoy = fechaISO(new Date());
   const [fecha, setFecha] = useState(hoy);
   const { datos: ventas } = useColeccion("recep_ventas_gf", "creadoEn", "desc");
@@ -847,14 +847,14 @@ function VentasDia({ usuario, nombreOperario, soloHoy }) {
         )}
       </div>
 
-      <Tarjeta className="p-6 mb-8 max-w-md">
+      {verTotales && <Tarjeta className="p-6 mb-8 max-w-md">
         <p className="text-[11px] uppercase tracking-[0.15em] font-semibold mb-1" style={{ color: TINTA_TENUE }}>Resumen del dia</p>
         <div style={{ borderTop: `1px solid ${PAPEL_LINEA}` }}>
           <FilaLedger etiqueta="Socios" valor={`${totalSocios.toFixed(2)} EUR`} />
           <div style={{ borderTop: `1px solid ${PAPEL_LINEA}` }} />
           <FilaLedger etiqueta="No socios" valor={`${totalNoSocios.toFixed(2)} EUR`} />
         </div>
-      </Tarjeta>
+      </Tarjeta>}
 
       <p className="text-sm font-medium mb-3" style={{ color: TINTA }}>Ventas de green fee del dia</p>
       <div className="space-y-2 mb-8">

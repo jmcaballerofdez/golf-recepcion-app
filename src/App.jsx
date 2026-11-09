@@ -86,6 +86,7 @@ function EstiloGlobal() {
 const GOLFB_APPS = [
   { id: "academia", nombre: "Academia", color: "#B03A2E", url: "https://academia.golfb.es/", Icon: GraduationCap },
   { id: "mantenimiento", nombre: "Mantenimiento", color: "#1A5C2A", url: "https://mantenimiento.golfb.es/", Icon: Tractor },
+  { id: "recepcion", nombre: "Recepcion", color: "#7C2A35", url: "https://recepciongcr.golfb.es/", Icon: ClipboardCheck },
   { id: "proshop", nombre: "Proshop", color: "#2E6DA4", url: "https://proshop.golfb.es/", Icon: ShoppingCart },
   { id: "finanzas", nombre: "Finanzas", color: "#8E969E", url: "https://finanzas.golfb.es/", Icon: Wallet },
   { id: "master", nombre: "Golf B Master", color: "#C9A227", url: "https://golfb.es/", Icon: Home },

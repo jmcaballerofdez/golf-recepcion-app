@@ -102,6 +102,8 @@ function AppSwitcher({ actual }) {
               <a
               key={appItem.id}
               href={esActual ? undefined : appItem.url}
+              target={esActual ? undefined : "_blank"}
+              rel="noopener noreferrer"
               title={appItem.nombre}
               className={cx(
                 "w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 flex-shrink-0",

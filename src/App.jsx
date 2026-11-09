@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { initializeApp } from "firebase/app";
 import {
   getFirestore, collection, doc, getDoc, setDoc, addDoc, deleteDoc, updateDoc,
-  onSnapshot, serverTimestamp, query, orderBy,
+  onSnapshot, serverTimestamp, query, orderBy, Timestamp,
 } from "firebase/firestore";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "firebase/auth";
 import {
@@ -610,7 +610,7 @@ export default function App() {
           {vista === "equipo" && puedeGestionEquipo && <Equipo />}
           {vista === "tipos_tarea" && esSuperadmin && <TiposTareaChecklist />}
           {vista === "ausencias" && <Ausencias nombreOperario={nombreOperario} gestor={puedeGestionEquipo} />}
-          {vista === "fichajes" && <Fichajes puedeInforme={puedeGestionEquipo} />}
+          {vista === "fichajes" && <Fichajes puedeInforme={puedeGestionEquipo} puedeCorregir={esSuperadmin} nombreOperario={nombreOperario} />}
           {vista === "puntos_qr" && esSuperadmin && <PuntosQR />}
         </div>
       </main>
@@ -1366,14 +1366,14 @@ function Ausencias({ nombreOperario, gestor }) {
 }
 
 function ultimoEstadoFichaje(fichajes, nombre) {
-  const delEmpleado = fichajes.filter((f) => f.empleado === nombre);
+  const delEmpleado = fichajes.filter((f) => f.empleado === nombre && !f.anulado);
   if (delEmpleado.length === 0) return "fuera";
   return delEmpleado[0].tipo === "entrada" ? "dentro" : "fuera";
 }
 
 // Empareja entradas y salidas de un empleado en tramos por dia
 function tramosDeFichajes(lista) {
-  const asc = [...lista].sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
+  const asc = lista.filter((f) => !f.anulado).sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
   const dias = {};
   asc.forEach((f) => { const k = fechaISO(f.momento); (dias[k] = dias[k] || []).push(f); });
   return Object.keys(dias).sort().map((fecha) => {
@@ -1476,8 +1476,8 @@ function InformeFichajes({ equipo, fichajes }) {
   function descargarBruto() {
     const sel = fichajes.filter((f) => todos || selSet.has(f.empleado))
       .sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0));
-    const filas = [["Fecha", "Hora", "Empleado", "Tipo", "Punto", "Origen", "Distancia al punto (m)", "Precision GPS (m)", "Latitud", "Longitud", "Motivo"]];
-    sel.forEach((f) => filas.push([fechaLegible(fechaISO(f.momento)), horaCorta(f.momento), f.empleado || "", f.tipo || "", f.puntoNombre || "", f.origen || "", f.distanciaM ?? "", f.precisionM ?? "", f.lat ?? "", f.lng ?? "", f.motivo === "comida" ? "Pausa comida" : f.motivo === "vuelta_comida" ? "Vuelta de comida" : ""]));
+    const filas = [["Fecha", "Hora", "Empleado", "Tipo", "Punto", "Origen", "Distancia al punto (m)", "Precision GPS (m)", "Latitud", "Longitud", "Motivo", "Estado", "Corregido por", "Motivo correccion/anulacion"]];
+    sel.forEach((f) => filas.push([fechaLegible(fechaISO(f.momento)), horaCorta(f.momento), f.empleado || "", f.tipo || "", f.puntoNombre || "", f.origen || "", f.distanciaM ?? "", f.precisionM ?? "", f.lat ?? "", f.lng ?? "", f.motivo === "comida" ? "Pausa comida" : f.motivo === "vuelta_comida" ? "Vuelta de comida" : "", f.anulado ? "ANULADO" : f.origen === "correccion" ? "Corregido" : f.origen === "manual" ? "Anadido a mano" : "", f.anuladoPor || f.corregidoPor || "", f.motivoAnulacion || f.motivoCorreccion || ""]));
     bajar(filas.map((x) => x.map(celda).join(";")).join("\r\n"), "fichajes_registro_completo_" + (todos ? "todos" : selNombre.replace(/\s+/g, "_")) + ".csv");
   }
   // Todo lo que consta de un empleado: fichajes, turnos, tareas, ventas, incidencias y checklist
@@ -1622,12 +1622,153 @@ function InformeFichajes({ equipo, fichajes }) {
   );
 }
 
-function Fichajes({ puedeInforme }) {
+// Correccion de fichajes por el responsable. Nada se borra: el original queda guardado
+// (marcado como anulado) y cada cambio deja constancia de quien, cuando y por que.
+function CorreccionFichajes({ equipo, fichajes, nombreOperario }) {
+  const [abierto, setAbierto] = useState(false);
+  const [persona, setPersona] = useState("");
+  const [fecha, setFecha] = useState(fechaISO(new Date()));
+  const [accion, setAccion] = useState(null); // { tipo: "editar" | "anular" | "nuevo", f }
+  const [form, setForm] = useState({ hora: "", tipoF: "entrada", comida: false, motivo: "" });
+  const [guardando, setGuardando] = useState(false);
+  const { datos: log } = useColeccion("recep_fichajes_log", "creadoEn", "desc");
+
+  const nombreFichaje = (nombre) => {
+    const cont = {};
+    fichajes.filter((f) => mismaPersona(nombre, f.empleado)).forEach((f) => { cont[f.empleado] = (cont[f.empleado] || 0) + 1; });
+    return Object.entries(cont).sort((a, b) => b[1] - a[1])[0]?.[0] || nombre;
+  };
+  const delDia = persona ? fichajes
+    .filter((f) => mismaPersona(persona, f.empleado) && fechaISO(f.momento) === fecha)
+    .sort((a, b) => (a.momento?.toMillis?.() || 0) - (b.momento?.toMillis?.() || 0)) : [];
+  const horaDe = (f) => horaCorta(f.momento);
+  const etiqueta = (f) => (f.motivo === "comida" ? "salida a comer" : f.motivo === "vuelta_comida" ? "vuelta de comida" : f.tipo);
+
+  function abrirAccion(tipo, f) {
+    setAccion({ tipo, f });
+    setForm({ hora: f ? horaDe(f) : "", tipoF: f?.tipo || "entrada", comida: f?.motivo === "comida", motivo: "" });
+  }
+  async function guardar() {
+    if (!form.motivo.trim()) { alert("Escribe el motivo de la correccion. Es obligatorio y queda registrado."); return; }
+    if (accion.tipo !== "anular" && !/^\d{2}:\d{2}$/.test(form.hora)) { alert("Indica la hora."); return; }
+    setGuardando(true);
+    try {
+      const por = nombreOperario || "Responsable";
+      const empleado = accion.f?.empleado || nombreFichaje(persona);
+      const momentoNuevo = accion.tipo !== "anular" ? Timestamp.fromDate(new Date(fecha + "T" + form.hora + ":00")) : null;
+      const baseNuevo = {
+        empleado, momento: momentoNuevo, tipo: accion.tipo === "editar" ? accion.f.tipo : form.tipoF,
+        ...((accion.tipo === "editar" ? accion.f.motivo : (form.comida && form.tipoF === "salida" ? "comida" : "")) ? { motivo: accion.tipo === "editar" ? accion.f.motivo : "comida" } : {}),
+        origen: accion.tipo === "editar" ? "correccion" : "manual",
+        motivoCorreccion: form.motivo.trim(), corregidoPor: por, corregidoEn: serverTimestamp(),
+      };
+      if (accion.tipo === "editar" || accion.tipo === "anular") {
+        await actualizarDoc("recep_fichajes", accion.f.id, { anulado: true, anuladoPor: por, anuladoEn: serverTimestamp(), motivoAnulacion: form.motivo.trim() });
+      }
+      let nuevoId = null;
+      if (accion.tipo !== "anular") {
+        const ref = await crearDoc("recep_fichajes", { ...baseNuevo, ...(accion.tipo === "editar" ? { sustituyeA: accion.f.id } : {}) });
+        nuevoId = ref.id;
+      }
+      await crearDoc("recep_fichajes_log", {
+        accion: accion.tipo, empleado, fecha, por, motivo: form.motivo.trim(), fichajeOriginalId: accion.f?.id || null, fichajeNuevoId: nuevoId,
+        antes: accion.f ? { hora: horaDe(accion.f), tipo: accion.f.tipo, motivo: accion.f.motivo || "" } : null,
+        despues: accion.tipo === "anular" ? null : { hora: form.hora, tipo: baseNuevo.tipo, motivo: baseNuevo.motivo || "" },
+      });
+      setAccion(null);
+    } catch (e) { alert("No se pudo guardar la correccion. Intentalo de nuevo."); }
+    setGuardando(false);
+  }
+  const logPersona = persona ? log.filter((l) => mismaPersona(persona, l.empleado)).slice(0, 15) : [];
+
+  return (
+    <div className="mt-10">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <p className="text-sm font-medium" style={{ color: TINTA }}>Corregir fichajes</p>
+        <BotonSecundario onClick={() => setAbierto(!abierto)}>{abierto ? "Cerrar" : "Corregir o anadir un fichaje"}</BotonSecundario>
+      </div>
+      {abierto && (
+        <Tarjeta className="p-4">
+          <p className="text-xs mb-3" style={{ color: TINTA_SUAVE }}>
+            Para olvidos o equivocaciones. No se borra nada: el fichaje original se conserva marcado como anulado y queda registrado quien lo corrige, cuando y el motivo (obligatorio). Los informes usan solo los fichajes vigentes.
+          </p>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Field label="Empleado">
+              <select className={inputCls} style={inputStyle} value={persona} onChange={(e) => setPersona(e.target.value)}>
+                <option value="">Selecciona...</option>
+                {equipo.filter((m) => !m.baja).map((m) => <option key={m.id} value={m.nombre}>{m.nombre}</option>)}
+              </select>
+            </Field>
+            <Field label="Dia"><input type="date" className={inputCls} style={inputStyle} value={fecha} onChange={(e) => e.target.value && setFecha(e.target.value)} /></Field>
+          </div>
+          {persona && (
+            <div className="mt-3 space-y-2">
+              {delDia.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Sin fichajes ese dia.</p>}
+              {delDia.map((f) => (
+                <div key={f.id} className="flex items-center justify-between gap-2 flex-wrap rounded-lg px-3 py-2" style={{ background: f.anulado ? LADRILLO_SUAVE : VINO_SUAVE }}>
+                  <div style={{ textDecoration: f.anulado ? "line-through" : "none", color: TINTA }}>
+                    <span className="num font-medium">{horaDe(f)}</span> · {etiqueta(f)}
+                    {f.origen === "correccion" && <span className="text-xs"> · corregido</span>}
+                    {f.origen === "manual" && <span className="text-xs"> · anadido a mano</span>}
+                  </div>
+                  {f.anulado ? <span className="text-xs" style={{ color: LADRILLO }}>Anulado por {f.anuladoPor}: {f.motivoAnulacion}</span> : (
+                    <div className="flex gap-3 text-sm">
+                      <button onClick={() => abrirAccion("editar", f)} className="underline" style={{ color: VINO }}>Cambiar hora</button>
+                      <button onClick={() => abrirAccion("anular", f)} className="underline" style={{ color: LADRILLO }}>Anular</button>
+                    </div>
+                  )}
+                </div>
+              ))}
+              <button onClick={() => abrirAccion("nuevo", null)} className="text-sm underline" style={{ color: VINO }}>+ Anadir un fichaje olvidado</button>
+            </div>
+          )}
+          {logPersona.length > 0 && (
+            <div className="mt-5">
+              <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Historial de correcciones</p>
+              <div className="space-y-1">
+                {logPersona.map((l) => (
+                  <p key={l.id} className="text-xs" style={{ color: TINTA_SUAVE }}>
+                    {fechaCorta(l.creadoEn)} · {l.por} · {l.accion === "editar" ? "cambio " + l.antes?.hora + " → " + l.despues?.hora : l.accion === "anular" ? "anulo " + l.antes?.hora + " " + l.antes?.tipo : "anadio " + l.despues?.hora + " " + l.despues?.tipo} (dia {fechaLegible(l.fecha)}) · "{l.motivo}"
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
+        </Tarjeta>
+      )}
+      <Modal open={!!accion} onClose={() => setAccion(null)} title={accion?.tipo === "editar" ? "Cambiar hora del fichaje" : accion?.tipo === "anular" ? "Anular fichaje" : "Anadir fichaje olvidado"}>
+        <p className="text-sm mb-3" style={{ color: TINTA_SUAVE }}>{persona} · {fechaLegible(fecha)}{accion?.f ? " · " + horaDe(accion.f) + " " + etiqueta(accion.f) : ""}</p>
+        {accion?.tipo !== "anular" && (
+          <Field label={accion?.tipo === "editar" ? "Hora correcta" : "Hora"}><input type="time" className={inputCls} style={inputStyle} value={form.hora} onChange={(e) => setForm({ ...form, hora: e.target.value })} /></Field>
+        )}
+        {accion?.tipo === "nuevo" && (
+          <>
+            <Field label="Tipo">
+              <select className={inputCls} style={inputStyle} value={form.tipoF} onChange={(e) => setForm({ ...form, tipoF: e.target.value })}>
+                <option value="entrada">Entrada</option>
+                <option value="salida">Salida</option>
+              </select>
+            </Field>
+            {form.tipoF === "salida" && (
+              <label className="flex items-center gap-2 mb-3 text-sm" style={{ color: TINTA_SUAVE }}>
+                <input type="checkbox" checked={form.comida} onChange={(e) => setForm({ ...form, comida: e.target.checked })} /> Es salida a comer (pausa de comida)
+              </label>
+            )}
+          </>
+        )}
+        <Field label="Motivo de la correccion (obligatorio)"><textarea rows={2} className={inputCls} style={inputStyle} value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} placeholder="p.ej. Olvido fichar la salida; me lo comunica por WhatsApp" /></Field>
+        <div className="mt-2"><BotonPrimario onClick={guardar} icon={null}>{guardando ? "Guardando..." : "Guardar correccion"}</BotonPrimario></div>
+      </Modal>
+    </div>
+  );
+}
+
+function Fichajes({ puedeInforme, puedeCorregir, nombreOperario }) {
   const { datos: equipoTodos } = useColeccion("recep_equipo", "nombre", "asc");
   const equipo = equipoTodos.filter((m) => !m.baja);
   const { datos: fichajes } = useColeccion("recep_fichajes", "momento", "desc");
   const hoy = fechaISO(new Date());
-  const fichajesHoy = fichajes.filter((f) => fechaISO(f.momento) === hoy);
+  const fichajesHoy = fichajes.filter((f) => fechaISO(f.momento) === hoy && !f.anulado);
 
   return (
     <div>
@@ -1636,7 +1777,7 @@ function Fichajes({ puedeInforme }) {
         {equipo.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Anade primero miembros del equipo.</p>}
         {equipo.map((m) => {
           const estado = ultimoEstadoFichaje(fichajes, m.nombre);
-          const enComida = estado === "fuera" && fichajes.find((f) => f.empleado === m.nombre)?.motivo === "comida";
+          const enComida = estado === "fuera" && fichajes.find((f) => f.empleado === m.nombre && !f.anulado)?.motivo === "comida";
           return (
             <Tarjeta key={m.id} className="p-4 flex items-center justify-between">
               <span className="font-medium" style={{ color: TINTA }}>{m.nombre}</span>
@@ -1659,6 +1800,7 @@ function Fichajes({ puedeInforme }) {
         ))}
       </div>
       {puedeInforme && <InformeFichajes equipo={equipoTodos} fichajes={fichajes} />}
+      {puedeCorregir && <CorreccionFichajes equipo={equipoTodos} fichajes={fichajes} nombreOperario={nombreOperario} />}
     </div>
   );
 }
@@ -2025,7 +2167,7 @@ function FicharQR({ usuario, nombreOperario, codigo }) {
     return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
-  const misFichajes = fichajes.filter((f) => f.empleado === nombreOperario);
+  const misFichajes = fichajes.filter((f) => f.empleado === nombreOperario && !f.anulado);
   const tipo = misFichajes.length === 0 || misFichajes[0].tipo === "salida" ? "entrada" : "salida";
 
   const distancia = punto && ubicacion ? distanciaMetros(ubicacion.lat, ubicacion.lng, punto.lat, punto.lng) : null;

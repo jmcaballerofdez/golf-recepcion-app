@@ -668,7 +668,7 @@ function descargarCsvInf(nombre, filas) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 // filas: [{ fecha:"YYYY-MM-DD", tarea, persona, minutos, inicio?, fin?, nota? }]
-function InformeHorasVista({ titulo, subtitulo, filas, sinTerminar = 0, nombreArchivo }) {
+function InformeHorasVista({ titulo, subtitulo, filas, pendientes = [], nombreArchivo }) {
   const hoy = new Date();
   const [rango, setRango] = useState("mes");
   const [pDesde, setPDesde] = useState(isoLocalInf(new Date(hoy.getFullYear(), hoy.getMonth(), 1)));
@@ -685,6 +685,7 @@ function InformeHorasVista({ titulo, subtitulo, filas, sinTerminar = 0, nombreAr
   const personas = Array.from(new Set(filas.map((f) => f.persona))).sort();
   const sel = filas.filter((f) => f.fecha >= desde && f.fecha <= hasta && (persona === "Todos" || f.persona === persona));
   const total = sel.reduce((s, f) => s + f.minutos, 0);
+  const sinTerminar = pendientes.filter((f) => f.fecha >= desde && f.fecha <= hasta && (persona === "Todos" || f.persona === persona)).length;
 
   function agrupar(clave, sub) {
     const m = {};
@@ -789,16 +790,16 @@ function InformeHorasRecep() {
   const { datos: dias } = useColeccion("recep_checklist_diario", "fecha", "desc");
   const aMin = (h) => { const [a, b] = String(h || "").split(":").map(Number); return isNaN(a) || isNaN(b) ? null : a * 60 + b; };
   const filas = [];
-  let sinTerminar = 0;
+  const pendientes = [];
   dias.forEach((d) => {
     Object.entries(d.detalle || {}).forEach(([tarea, x]) => {
       if (!x || !x.inicio) return;
       const i = aMin(x.inicio), f = aMin(x.fin);
-      if (!x.fin || i == null || f == null || f < i) { sinTerminar += 1; return; }
+      if (!x.fin || i == null || f == null || f < i) { pendientes.push({ fecha: d.fecha, persona: x.por || d.actualizadoPor || "Sin nombre" }); return; }
       filas.push({ fecha: d.fecha, tarea, persona: x.por || d.actualizadoPor || "Sin nombre", minutos: f - i, inicio: x.inicio, fin: x.fin });
     });
   });
-  return <InformeHorasVista titulo="Informe de horas por tarea" subtitulo="Tiempo dedicado a cada tarea del checklist de Recepcion." filas={filas} sinTerminar={sinTerminar} nombreArchivo="horas_recepcion" />;
+  return <InformeHorasVista titulo="Informe de horas por tarea" subtitulo="Tiempo dedicado a cada tarea del checklist de Recepcion." filas={filas} pendientes={pendientes} nombreArchivo="horas_recepcion" />;
 }
 
 export default function App() {

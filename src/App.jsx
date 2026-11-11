@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { initializeApp } from "firebase/app";
 import {
-  getFirestore, collection, doc, getDoc, setDoc, addDoc, deleteDoc, updateDoc,
-  onSnapshot, serverTimestamp, query, orderBy, Timestamp,
+  getFirestore, collection, doc, getDoc, getDocs, setDoc, addDoc, deleteDoc, updateDoc,
+  onSnapshot, serverTimestamp, query, orderBy, where, Timestamp,
 } from "firebase/firestore";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, sendPasswordResetEmail, updatePassword, reauthenticateWithCredential, EmailAuthProvider } from "firebase/auth";
 import {
@@ -468,6 +468,180 @@ function MiCuenta({ usuario, onClose }) {
   );
 }
 
+// ---------- DOCUMENTOS PRIVADOS DE EMPLEADOS (nominas, certificados...) ----------
+// Privacidad garantizada por las reglas de Firestore (colecciones documentos_empleado y
+// documentos_archivo): solo el superadmin gestiona; cada empleado solo lee los suyos.
+const CATEGORIAS_DOC = { nomina: "Nóminas", retenciones: "Certificado de retenciones", contrato: "Contratos", otros: "Otros documentos" };
+const MAX_DOC_BYTES = 700 * 1024;
+const ROLES_PERSONAL = ["recepcion", "responsable_recepcion", "admin", "jardinero", "greenkeeper", "mantenimiento"];
+
+function leerComoDataUrl(file) {
+  return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(file); });
+}
+function useDocsDe(uid) {
+  const [docs, setDocs] = useState([]);
+  useEffect(() => {
+    if (!uid) { setDocs([]); return; }
+    const q = query(collection(db, "clubes", CLUB_ID, "documentos_empleado"), where("uid", "==", uid));
+    const unsub = onSnapshot(q, (s) => setDocs(s.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => String(b.periodo || "").localeCompare(String(a.periodo || "")) || (b.creadoEn?.toMillis?.() || 0) - (a.creadoEn?.toMillis?.() || 0))), () => setDocs([]));
+    return () => unsub();
+  }, [uid]);
+  return docs;
+}
+async function abrirDocumento(meta, marcarVisto) {
+  const ventana = window.open("", "_blank");
+  try {
+    const snap = await getDoc(docClub("documentos_archivo", meta.id));
+    if (!snap.exists()) { if (ventana) ventana.close(); alert("No se encuentra el archivo."); return; }
+    const blob = await (await fetch(snap.data().datos)).blob();
+    const url = URL.createObjectURL(blob);
+    if (ventana) ventana.location.href = url;
+    else { const a = document.createElement("a"); a.href = url; a.download = meta.archivoNombre || "documento"; a.click(); }
+    if (marcarVisto && !meta.visto) await actualizarDoc("documentos_empleado", meta.id, { visto: true, vistoEn: serverTimestamp() });
+  } catch (e) { if (ventana) ventana.close(); alert("No se pudo abrir el documento."); }
+}
+function periodoLegible(p) {
+  if (!p) return "";
+  const [y, m] = String(p).split("-");
+  const meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+  return m ? meses[Number(m) - 1] + " " + y : y;
+}
+
+function MisDocumentos({ usuario }) {
+  const docs = useDocsDe(usuario?.uid);
+  const [cat, setCat] = useState("nomina");
+  const lista = docs.filter((d) => d.categoria === cat);
+  const nuevos = (c) => docs.filter((d) => d.categoria === c && !d.visto).length;
+  return (
+    <div>
+      <Cabecera titulo="Mis documentos" subtitulo="Tus documentos personales. Solo tú puedes verlos." />
+      <div className="flex gap-2 flex-wrap mb-5">
+        {Object.entries(CATEGORIAS_DOC).map(([k, v]) => (
+          <PillFiltro key={k} activo={cat === k} onClick={() => setCat(k)}>{v}{nuevos(k) > 0 ? " (" + nuevos(k) + " nuevo" + (nuevos(k) > 1 ? "s" : "") + ")" : ""}</PillFiltro>
+        ))}
+      </div>
+      <div className="space-y-3 max-w-xl">
+        {lista.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>No hay documentos en este apartado.</p>}
+        {lista.map((d) => (
+          <Tarjeta key={d.id} className="p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium" style={{ color: TINTA }}>{d.titulo}</p>
+                <p className="text-xs" style={{ color: TINTA_SUAVE }}>{periodoLegible(d.periodo)} · subido el {fechaCorta(d.creadoEn)}</p>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {!d.visto && <Badge tone="ambar">Nuevo</Badge>}
+                <BotonSecundario onClick={() => abrirDocumento(d, true)}>Abrir</BotonSecundario>
+              </div>
+            </div>
+          </Tarjeta>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DocumentosAdmin({ nombreOperario }) {
+  const [personal, setPersonal] = useState([]);
+  const [uid, setUid] = useState("");
+  const docs = useDocsDe(uid);
+  const vacio = { categoria: "nomina", periodo: new Date().toISOString().slice(0, 7), titulo: "" };
+  const [form, setForm] = useState(vacio);
+  const [archivo, setArchivo] = useState(null);
+  const [subiendo, setSubiendo] = useState(false);
+  const [cat, setCat] = useState("todas");
+  useEffect(() => {
+    getDocs(query(collection(db, "Usuarios"), where("role", "in", ROLES_PERSONAL)))
+      .then((s) => setPersonal(s.docs.map((d) => ({ uid: d.id, ...d.data() })).sort((a, b) => String(a.nombre || a.email).localeCompare(String(b.nombre || b.email)))))
+      .catch(() => setPersonal([]));
+  }, []);
+  const persona = personal.find((p) => p.uid === uid);
+
+  async function subir() {
+    if (!persona) { alert("Elige primero al trabajador."); return; }
+    if (!archivo) { alert("Elige el archivo (PDF o imagen)."); return; }
+    if (archivo.size > MAX_DOC_BYTES) { alert("El archivo pesa " + Math.round(archivo.size / 1024) + " KB. El maximo es 700 KB. Comprime el PDF e intentalo de nuevo."); return; }
+    if (!/^application\/pdf$|^image\//.test(archivo.type)) { alert("Solo se admiten PDF o imagenes."); return; }
+    setSubiendo(true);
+    try {
+      const datos = await leerComoDataUrl(archivo);
+      const titulo = form.titulo.trim() || (CATEGORIAS_DOC[form.categoria] + (form.periodo ? " " + periodoLegible(form.periodo) : ""));
+      const ref = await addDoc(collection(db, "clubes", CLUB_ID, "documentos_empleado"), {
+        uid: persona.uid, empleado: persona.nombre || persona.email, categoria: form.categoria, periodo: form.periodo || "", titulo,
+        archivoNombre: archivo.name, mime: archivo.type, bytes: archivo.size, subidoPor: nombreOperario || "Administrador", visto: false, creadoEn: serverTimestamp(),
+      });
+      try { await setDoc(docClub("documentos_archivo", ref.id), { uid: persona.uid, datos }); }
+      catch (e) { await deleteDoc(docClub("documentos_empleado", ref.id)); throw e; }
+      setArchivo(null); setForm({ ...form, titulo: "" });
+      const inp = document.getElementById("doc-archivo"); if (inp) inp.value = "";
+    } catch (e) { alert("No se pudo subir el documento. Comprueba que las reglas de Firebase estan actualizadas."); }
+    setSubiendo(false);
+  }
+  async function eliminar(d) {
+    if (!confirm("Eliminar '" + d.titulo + "' de " + d.empleado + "? Se borra del todo y no se puede recuperar.")) return;
+    await borrarDoc("documentos_archivo", d.id);
+    await borrarDoc("documentos_empleado", d.id);
+  }
+  const lista = cat === "todas" ? docs : docs.filter((d) => d.categoria === cat);
+
+  return (
+    <div>
+      <Cabecera titulo="Documentos de empleados" subtitulo="Nominas, certificados de retenciones y otros documentos. Cada trabajador solo ve los suyos." />
+      <div className="max-w-2xl">
+        <Field label="Trabajador">
+          <select className={inputCls} style={inputStyle} value={uid} onChange={(e) => setUid(e.target.value)}>
+            <option value="">Selecciona...</option>
+            {personal.map((p) => <option key={p.uid} value={p.uid}>{(p.nombre || p.email) + " · " + p.role}</option>)}
+          </select>
+        </Field>
+        {uid && (
+          <>
+            <Tarjeta className="p-4 mb-6">
+              <p className="text-sm font-medium mb-3" style={{ color: TINTA }}>Subir documento a {persona?.nombre || persona?.email}</p>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <Field label="Tipo">
+                  <select className={inputCls} style={inputStyle} value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
+                    {Object.entries(CATEGORIAS_DOC).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                  </select>
+                </Field>
+                <Field label={form.categoria === "retenciones" ? "Ejercicio (mes de cierre)" : "Mes / periodo"}>
+                  <input type="month" className={inputCls} style={inputStyle} value={form.periodo} onChange={(e) => setForm({ ...form, periodo: e.target.value })} />
+                </Field>
+              </div>
+              <Field label="Titulo (opcional; si lo dejas vacio se pone solo)"><input className={inputCls} style={inputStyle} value={form.titulo} onChange={(e) => setForm({ ...form, titulo: e.target.value })} placeholder="p.ej. Nomina octubre 2026" /></Field>
+              <Field label="Archivo (PDF o imagen, maximo 700 KB)"><input id="doc-archivo" type="file" accept="application/pdf,image/*" onChange={(e) => setArchivo(e.target.files?.[0] || null)} className="text-sm" /></Field>
+              <BotonPrimario onClick={subir} icon={null}>{subiendo ? "Subiendo..." : "Subir documento"}</BotonPrimario>
+            </Tarjeta>
+            <div className="flex gap-2 flex-wrap mb-4">
+              <PillFiltro activo={cat === "todas"} onClick={() => setCat("todas")}>Todos</PillFiltro>
+              {Object.entries(CATEGORIAS_DOC).map(([k, v]) => <PillFiltro key={k} activo={cat === k} onClick={() => setCat(k)}>{v}</PillFiltro>)}
+            </div>
+            <div className="space-y-3">
+              {lista.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>No hay documentos.</p>}
+              {lista.map((d) => (
+                <Tarjeta key={d.id} className="p-4">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <div>
+                      <p className="text-sm font-medium" style={{ color: TINTA }}>{d.titulo}</p>
+                      <p className="text-xs" style={{ color: TINTA_SUAVE }}>{CATEGORIAS_DOC[d.categoria]} · {periodoLegible(d.periodo)} · subido el {fechaCorta(d.creadoEn)} · {Math.round((d.bytes || 0) / 1024)} KB</p>
+                      <p className="text-xs" style={{ color: d.visto ? SALVIA : TINTA_TENUE }}>{d.visto ? "Visto por el trabajador" : "Aun no lo ha abierto"}</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <BotonSecundario onClick={() => abrirDocumento(d, false)}>Abrir</BotonSecundario>
+                      <button onClick={() => eliminar(d)} className="p-1" style={{ color: LADRILLO }}><Trash2 size={16} /></button>
+                    </div>
+                  </div>
+                </Tarjeta>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const { currentUser: usuario, userRole, modulosActivos, nombreOperario, cargandoAuth } = useAuthRecepcion();
   const [vista, setVista] = useState("dashboard");
@@ -481,6 +655,7 @@ export default function App() {
   const NAV_GROUPS = [
     { label: "Principal", items: [
       { id: "dashboard", label: "Panel", Icon: LayoutDashboard },
+      { id: "mis_documentos", label: "Mis documentos", Icon: Lock },
     ]},
     { label: "Operativa", items: [
       { id: "ventas", label: "Ventas del dia", Icon: Wallet },
@@ -497,12 +672,13 @@ export default function App() {
     ...(esSuperadmin ? [{ label: "Configuracion", items: [
       { id: "tipos_tarea", label: "Tareas del checklist", Icon: Settings },
       { id: "puntos_qr", label: "Puntos QR", Icon: MapPin },
+      ...(userRole === "superadmin" ? [{ id: "documentos_admin", label: "Documentos de empleados", Icon: Shield }] : []),
     ]}] : []),
   ];
 
   const TITULOS = {
     dashboard: "Panel", ventas: "Ventas del dia", checklist: "Checklist de tareas", turnos: "Turnos", necesidades: "Necesidades",
-    incidencias: "Incidencias", ausencias: "Ausencias", equipo: "Equipo", tipos_tarea: "Tareas del checklist", fichajes: "Fichajes", puntos_qr: "Puntos QR",
+    incidencias: "Incidencias", ausencias: "Ausencias", equipo: "Equipo", tipos_tarea: "Tareas del checklist", fichajes: "Fichajes", puntos_qr: "Puntos QR", mis_documentos: "Mis documentos", documentos_admin: "Documentos de empleados",
   };
 
   if (cargandoAuth) {
@@ -615,6 +791,8 @@ export default function App() {
           {vista === "ausencias" && <Ausencias nombreOperario={nombreOperario} gestor={puedeGestionEquipo} />}
           {vista === "fichajes" && <Fichajes puedeInforme={puedeGestionEquipo} puedeCorregir={esSuperadmin} nombreOperario={nombreOperario} />}
           {vista === "puntos_qr" && esSuperadmin && <PuntosQR />}
+          {vista === "mis_documentos" && <MisDocumentos usuario={usuario} />}
+          {vista === "documentos_admin" && userRole === "superadmin" && <DocumentosAdmin nombreOperario={nombreOperario} />}
         </div>
       </main>
     </div>

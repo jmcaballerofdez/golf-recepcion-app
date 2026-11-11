@@ -642,6 +642,158 @@ function DocumentosAdmin({ nombreOperario }) {
   );
 }
 
+// ---------- INFORME DE HORAS POR TAREA (solo superadmin) ----------
+function minTxtInf(m) {
+  const t = Math.round(m || 0);
+  const h = Math.floor(t / 60), r = t % 60;
+  return h ? h + " h " + String(r).padStart(2, "0") + " min" : r + " min";
+}
+function isoLocalInf(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function descargarCsvInf(nombre, filas) {
+  const esc = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+  const txt = "﻿" + filas.map((f) => f.map(esc).join(";")).join("\r\n");
+  const url = URL.createObjectURL(new Blob([txt], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = nombre; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+// filas: [{ fecha:"YYYY-MM-DD", tarea, persona, minutos, inicio?, fin?, nota? }]
+function InformeHorasVista({ titulo, subtitulo, filas, sinTerminar = 0, nombreArchivo }) {
+  const hoy = new Date();
+  const [rango, setRango] = useState("mes");
+  const [pDesde, setPDesde] = useState(isoLocalInf(new Date(hoy.getFullYear(), hoy.getMonth(), 1)));
+  const [pHasta, setPHasta] = useState(isoLocalInf(hoy));
+  const [persona, setPersona] = useState("Todos");
+  const [abiertas, setAbiertas] = useState({});
+  const [verDetalle, setVerDetalle] = useState(false);
+
+  let desde = pDesde, hasta = pHasta;
+  if (rango === "7") { desde = isoLocalInf(new Date(Date.now() - 6 * 86400000)); hasta = isoLocalInf(hoy); }
+  if (rango === "mes") { desde = isoLocalInf(new Date(hoy.getFullYear(), hoy.getMonth(), 1)); hasta = isoLocalInf(hoy); }
+  if (rango === "mesant") { desde = isoLocalInf(new Date(hoy.getFullYear(), hoy.getMonth() - 1, 1)); hasta = isoLocalInf(new Date(hoy.getFullYear(), hoy.getMonth(), 0)); }
+
+  const personas = Array.from(new Set(filas.map((f) => f.persona))).sort();
+  const sel = filas.filter((f) => f.fecha >= desde && f.fecha <= hasta && (persona === "Todos" || f.persona === persona));
+  const total = sel.reduce((s, f) => s + f.minutos, 0);
+
+  function agrupar(clave, sub) {
+    const m = {};
+    sel.forEach((f) => {
+      const k = f[clave];
+      m[k] = m[k] || { nombre: k, n: 0, min: 0, sub: {} };
+      m[k].n += 1; m[k].min += f.minutos;
+      const s = f[sub];
+      m[k].sub[s] = m[k].sub[s] || { nombre: s, n: 0, min: 0 };
+      m[k].sub[s].n += 1; m[k].sub[s].min += f.minutos;
+    });
+    return Object.values(m).sort((a, b) => b.min - a.min);
+  }
+  const porTarea = agrupar("tarea", "persona");
+  const porPersona = agrupar("persona", "tarea");
+
+  function exportar() {
+    const cab = [["Fecha", "Trabajador", "Tarea", "Inicio", "Fin", "Minutos", "Horas"]];
+    const cuerpo = sel.slice().sort((a, b) => a.fecha.localeCompare(b.fecha)).map((f) => [f.fecha, f.persona, f.tarea, f.inicio || "", f.fin || "", f.minutos, (f.minutos / 60).toFixed(2).replace(".", ",")]);
+    const resumen = [[], ["RESUMEN POR TAREA"], ["Tarea", "Veces", "Minutos", "Horas"]].concat(porTarea.map((t) => [t.nombre, t.n, t.min, (t.min / 60).toFixed(2).replace(".", ",")]));
+    descargarCsvInf(nombreArchivo + "_" + desde + "_" + hasta + ".csv", cab.concat(cuerpo, resumen));
+  }
+
+  function Bloque({ lista, clave }) {
+    return (
+      <div className="space-y-2">
+        {lista.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Sin datos en este periodo.</p>}
+        {lista.map((g) => {
+          const k = clave + g.nombre;
+          return (
+            <Tarjeta key={k} className="p-4">
+              <button className="w-full flex items-center justify-between gap-3 text-left" onClick={() => setAbiertas({ ...abiertas, [k]: !abiertas[k] })}>
+                <span className="text-sm font-medium" style={{ color: TINTA }}>{g.nombre}</span>
+                <span className="text-sm flex-shrink-0" style={{ color: TINTA_SUAVE }}>{g.n} {g.n === 1 ? "vez" : "veces"} · <b style={{ color: TINTA }}>{minTxtInf(g.min)}</b> · media {minTxtInf(g.min / g.n)}</span>
+              </button>
+              {abiertas[k] && (
+                <div className="mt-3 pt-3 space-y-1" style={{ borderTop: "1px solid " + PAPEL_LINEA }}>
+                  {Object.values(g.sub).sort((a, b) => b.min - a.min).map((s) => (
+                    <div key={s.nombre} className="flex items-center justify-between text-xs" style={{ color: TINTA_SUAVE }}>
+                      <span>{s.nombre}</span><span>{s.n} · {minTxtInf(s.min)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Tarjeta>
+          );
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Cabecera titulo={titulo} subtitulo={subtitulo}>
+        <BotonSecundario onClick={exportar}>Descargar Excel (CSV)</BotonSecundario>
+      </Cabecera>
+      <div className="flex gap-2 flex-wrap mb-4">
+        <PillFiltro activo={rango === "7"} onClick={() => setRango("7")}>Ultimos 7 dias</PillFiltro>
+        <PillFiltro activo={rango === "mes"} onClick={() => setRango("mes")}>Este mes</PillFiltro>
+        <PillFiltro activo={rango === "mesant"} onClick={() => setRango("mesant")}>Mes anterior</PillFiltro>
+        <PillFiltro activo={rango === "pers"} onClick={() => setRango("pers")}>Personalizado</PillFiltro>
+      </div>
+      <div className="grid sm:grid-cols-3 gap-x-4 max-w-2xl">
+        {rango === "pers" && <Field label="Desde"><input type="date" className={inputCls} style={inputStyle} value={pDesde} onChange={(e) => setPDesde(e.target.value)} /></Field>}
+        {rango === "pers" && <Field label="Hasta"><input type="date" className={inputCls} style={inputStyle} value={pHasta} onChange={(e) => setPHasta(e.target.value)} /></Field>}
+        <Field label="Trabajador">
+          <select className={inputCls} style={inputStyle} value={persona} onChange={(e) => setPersona(e.target.value)}>
+            <option value="Todos">Todos</option>
+            {personas.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </Field>
+      </div>
+      <p className="text-xs mb-4" style={{ color: TINTA_TENUE }}>Del {desde} al {hasta}</p>
+
+      <Tarjeta className="p-5 mb-6 max-w-md">
+        <p className="text-xs uppercase tracking-wide mb-1" style={{ color: VINO }}>Total dedicado</p>
+        <p className="text-2xl font-semibold" style={{ color: TINTA }}>{minTxtInf(total)}</p>
+        <p className="text-xs" style={{ color: TINTA_SUAVE }}>{sel.length} tareas registradas{sinTerminar > 0 ? " · " + sinTerminar + " sin terminar (no cuentan)" : ""}</p>
+      </Tarjeta>
+
+      <p className="text-sm font-semibold mb-2" style={{ color: TINTA }}>Por tarea <span className="font-normal text-xs" style={{ color: TINTA_TENUE }}>(pulsa una para ver quien la hizo)</span></p>
+      <Bloque lista={porTarea} clave="t:" />
+      <p className="text-sm font-semibold mt-6 mb-2" style={{ color: TINTA }}>Por trabajador</p>
+      <Bloque lista={porPersona} clave="p:" />
+
+      <button className="text-sm underline mt-6" style={{ color: VINO }} onClick={() => setVerDetalle(!verDetalle)}>{verDetalle ? "Ocultar detalle" : "Ver detalle dia a dia"}</button>
+      {verDetalle && (
+        <div className="space-y-1 mt-3">
+          {sel.slice().sort((a, b) => b.fecha.localeCompare(a.fecha)).slice(0, 300).map((f, i) => (
+            <div key={i} className="flex items-center justify-between gap-3 text-xs py-1" style={{ color: TINTA_SUAVE, borderBottom: "1px solid " + PAPEL_LINEA }}>
+              <span>{f.fecha} · {f.persona} · {f.tarea}</span>
+              <span className="flex-shrink-0">{f.inicio ? f.inicio + "-" + f.fin + " · " : ""}{minTxtInf(f.minutos)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InformeHorasRecep() {
+  const { datos: dias } = useColeccion("recep_checklist_diario", "fecha", "desc");
+  const aMin = (h) => { const [a, b] = String(h || "").split(":").map(Number); return isNaN(a) || isNaN(b) ? null : a * 60 + b; };
+  const filas = [];
+  let sinTerminar = 0;
+  dias.forEach((d) => {
+    Object.entries(d.detalle || {}).forEach(([tarea, x]) => {
+      if (!x || !x.inicio) return;
+      const i = aMin(x.inicio), f = aMin(x.fin);
+      if (!x.fin || i == null || f == null || f < i) { sinTerminar += 1; return; }
+      filas.push({ fecha: d.fecha, tarea, persona: x.por || d.actualizadoPor || "Sin nombre", minutos: f - i, inicio: x.inicio, fin: x.fin });
+    });
+  });
+  return <InformeHorasVista titulo="Informe de horas por tarea" subtitulo="Tiempo dedicado a cada tarea del checklist de Recepcion." filas={filas} sinTerminar={sinTerminar} nombreArchivo="horas_recepcion" />;
+}
+
 export default function App() {
   const { currentUser: usuario, userRole, modulosActivos, nombreOperario, cargandoAuth } = useAuthRecepcion();
   const [vista, setVista] = useState("dashboard");
@@ -673,12 +825,13 @@ export default function App() {
       { id: "tipos_tarea", label: "Tareas del checklist", Icon: Settings },
       { id: "puntos_qr", label: "Puntos QR", Icon: MapPin },
       ...(userRole === "superadmin" ? [{ id: "documentos_admin", label: "Documentos de empleados", Icon: Shield }] : []),
+      ...(userRole === "superadmin" ? [{ id: "informe_horas", label: "Informe de horas", Icon: Clock }] : []),
     ]}] : []),
   ];
 
   const TITULOS = {
     dashboard: "Panel", ventas: "Ventas del dia", checklist: "Checklist de tareas", turnos: "Turnos", necesidades: "Necesidades",
-    incidencias: "Incidencias", ausencias: "Ausencias", equipo: "Equipo", tipos_tarea: "Tareas del checklist", fichajes: "Fichajes", puntos_qr: "Puntos QR", mis_documentos: "Mis documentos", documentos_admin: "Documentos de empleados",
+    incidencias: "Incidencias", ausencias: "Ausencias", equipo: "Equipo", tipos_tarea: "Tareas del checklist", fichajes: "Fichajes", puntos_qr: "Puntos QR", mis_documentos: "Mis documentos", documentos_admin: "Documentos de empleados", informe_horas: "Informe de horas",
   };
 
   if (cargandoAuth) {
@@ -793,6 +946,7 @@ export default function App() {
           {vista === "puntos_qr" && esSuperadmin && <PuntosQR />}
           {vista === "mis_documentos" && <MisDocumentos usuario={usuario} />}
           {vista === "documentos_admin" && userRole === "superadmin" && <DocumentosAdmin nombreOperario={nombreOperario} />}
+          {vista === "informe_horas" && userRole === "superadmin" && <InformeHorasRecep />}
         </div>
       </main>
     </div>

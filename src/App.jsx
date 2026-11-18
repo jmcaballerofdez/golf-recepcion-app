@@ -1792,6 +1792,68 @@ function TiposTareaChecklist() {
 
 function horaAhora() { const d = new Date(); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
 
+// Panel "Equipo ahora": qué tarea hace cada persona, desde cuándo y cuánto lleva (tiempo real)
+function PanelEquipoAhoraRecep({ dias, hoy }) {
+  const [, setTick] = useState(0);
+  useEffect(() => { const i = setInterval(() => setTick((n) => n + 1), 15000); return () => clearInterval(i); }, []);
+  const fmtDur = (m) => { const min = Math.max(0, Math.round(m / 60000)); return min < 60 ? min + " min" : Math.floor(min / 60) + " h " + String(min % 60).padStart(2, "0") + " min"; };
+  const filas = [];
+  const limite = new Date(); limite.setDate(limite.getDate() - 7);
+  const limIso = fechaISO(limite);
+  dias.forEach((dd) => {
+    if (!dd.fecha || dd.fecha < limIso) return;
+    Object.entries(dd.detalle || {}).forEach(([tarea, d]) => {
+      if (!d || !d.inicio) return;
+      const ini = new Date(dd.fecha + "T" + d.inicio + ":00");
+      if (isNaN(ini)) return;
+      const fin = d.fin ? new Date(dd.fecha + "T" + d.fin + ":00") : null;
+      if (fin && dd.fecha !== hoy) return;
+      filas.push({ k: dd.fecha + tarea, tarea, fecha: dd.fecha, ini, fin, inicio: d.inicio, fin_s: d.fin, quien: d.iniciadaPor || d.por || dd.actualizadoPor || "—" });
+    });
+  });
+  const ahora = Date.now();
+  const enCurso = filas.filter((f) => !f.fin).sort((a, b) => a.ini - b.ini);
+  const hechas = filas.filter((f) => f.fin).sort((a, b) => b.fin - a.fin);
+  const dia = (f) => f === hoy ? "hoy" : "el " + fechaLegible(f);
+  return (
+    <div className="mb-6 max-w-xl">
+      <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>🟢 Equipo ahora · tiempo real</p>
+      {enCurso.length === 0 && <p className="text-sm mb-2" style={{ color: TINTA_TENUE }}>Nadie tiene una tarea en curso ahora mismo.</p>}
+      <div className="space-y-2">
+        {enCurso.map((f) => (
+          <Tarjeta key={f.k} className="p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold" style={{ color: TINTA }}>{f.quien}</p>
+                <p className="text-sm" style={{ color: TINTA }}>{f.tarea}</p>
+                <p className="text-xs" style={{ color: TINTA_TENUE }}>Empezó {dia(f.fecha)} a las {f.inicio}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-lg font-semibold" style={{ color: VINO }}>{fmtDur(ahora - f.ini.getTime())}</p>
+                <p className="text-xs" style={{ color: TINTA_TENUE }}>en curso</p>
+              </div>
+            </div>
+          </Tarjeta>
+        ))}
+      </div>
+      {hechas.length > 0 && <p className="text-xs uppercase tracking-wide mt-4 mb-2" style={{ color: TINTA_TENUE }}>Finalizadas hoy</p>}
+      <div className="space-y-2">
+        {hechas.map((f) => (
+          <Tarjeta key={f.k} className="p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium" style={{ color: TINTA }}>{f.quien} · {f.tarea}</p>
+                <p className="text-xs" style={{ color: TINTA_TENUE }}>{f.inicio} → {f.fin_s}</p>
+              </div>
+              <p className="text-sm font-semibold" style={{ color: TINTA_SUAVE }}>{fmtDur(f.fin - f.ini)}</p>
+            </div>
+          </Tarjeta>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Checklist({ usuario, nombreOperario }) {
   const hoy = fechaISO(new Date());
   const diaSem = new Date().getDay();
@@ -1803,7 +1865,11 @@ function Checklist({ usuario, nombreOperario }) {
   const [abiertas, setAbiertas] = useState({});
 
   async function guardarTarea(tarea, patch) {
-    const nuevoDet = { ...detalle, [tarea]: { ...(detalle[tarea] || {}), ...patch, por: nombreOperario || usuario?.email || "" } };
+    const quien = nombreOperario || usuario?.email || "";
+    const extra = {};
+    if (patch.inicio) extra.iniciadaPor = quien;
+    if (patch.fin) extra.finalizadaPor = quien;
+    const nuevoDet = { ...detalle, [tarea]: { ...(detalle[tarea] || {}), ...patch, ...extra, por: quien } };
     const nuevasHechas = { ...hechas, [tarea]: !!nuevoDet[tarea].fin };
     if (diaDoc) await actualizarDoc("recep_checklist_diario", diaDoc.id, { hechas: nuevasHechas, detalle: nuevoDet });
     else await crearDoc("recep_checklist_diario", { fecha: hoy, hechas: nuevasHechas, detalle: nuevoDet, actualizadoPor: nombreOperario || usuario?.email || "" });
@@ -1854,6 +1920,7 @@ function Checklist({ usuario, nombreOperario }) {
   return (
     <div>
       <Cabecera titulo="Checklist de tareas" subtitulo={`Hoy, ${fechaLegible(hoy)}. ${completadas}/${deHoy.length} completadas.`} />
+      <PanelEquipoAhoraRecep dias={dias} hoy={hoy} />
       {tareas.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>No hay tareas configuradas. El responsable las anade en "Tareas del checklist".</p>}
       {tareas.length > 0 && deHoy.length === 0 && <p className="text-sm" style={{ color: TINTA_TENUE }}>Hoy no hay tareas programadas.</p>}
       {diarias.length > 0 && <p className="text-xs uppercase tracking-wide mb-2" style={{ color: VINO }}>Tareas diarias</p>}
